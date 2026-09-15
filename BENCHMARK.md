@@ -1,29 +1,36 @@
-# Local baseline — 2026-09-11
+# Default workload benchmark
 
-Measured on this workstation: Intel Core i7-8700K (6 cores / 12 threads), about 32 GB RAM, Windows, Python 3.12.0. One CPU job process; timings below are a single run, not a statistical performance guarantee. Dependency installation and web development were also active.
+Acceptance budget: **under 30 seconds for solve + independent validation + database save** on the default one-hour scenario, with 100 spacecraft and 10,000 mixed-parameter requests. Generation is measured separately.
 
-Scenario: 2026-09-11 12:00 UTC, one hour, 100 synthetic circular satellites at 550 km / 53° inclination. Constraints: daylight, sun elevation >=0°, target elevation >=10°, off-nadir <=45°, capacity 1, 30 s dwell, 10 s cooldown, observe once, candidate starts every 30 s, validation every 5 s including endpoints.
+Run on the local Windows workstation (Intel Core i7-8700K, 32 GB RAM), Python 3.12, using the pinned dependencies:
 
-| Work | Measured result |
-|---|---:|
-| Random generation, 10,000 observable targets | 2.909 s |
-| Random candidates tested (seed 42) | 22,024 |
-| Candidates rejected by sampled access | 11,578 |
-| Additional feasible candidates beyond requested count | 446 |
-| Schedule, including binary artifact creation | 2.122 s |
-| Targets passing access | 10,000 |
-| Targets assigned / observations | 3,202 |
-| Observable but unassigned | 6,798 |
-| Spatial candidates entering narrow checks | 400,866 |
-| Ephemerides, 361 samples × 100 satellites × XYZ Float64 | 866,400 bytes |
-| Target snapshot, 10,000 rows × 6 Float64 | 480,000 bytes |
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark.py --save
+```
 
-Generation input bounds: latitude -60° to 70°, longitude -180° to 180°. Generation excludes candidates with no complete sampled access interval in this scenario. It does not enforce eventual schedule allocation.
+The benchmark uses a temporary database and does not change the working catalog. The script exits with an error if the 30-second solve/validate/save budget is exceeded. The exact latest numbers and checks are committed in [benchmark-result.json](benchmark-result.json).
 
-The candidate count is the sum entering the first narrow-phase check per satellite/start pair. A candidate may then undergo several dwell-time checks, so this number is not the total number of geometry evaluations.
+## Reproducible inputs
 
-Artifacts are under `data/jobs/46ab3067004a4eb4ba3394e0b6d0959b/`; generation job is `3849391307fb4c198fd8c52001c201d0`. Load the completed run from the Plan tab, or reload the app to open the latest run.
+- 100 synthetic spacecraft: 70 LEO at 550 km/53°, 15 MEO at 20,200 km/56°, 10 GEO at 35,786 km/0°, and 5 elliptical HEO at 63.4° inclination.
+- Start 2026-09-11 12:00 UTC; duration 3,600 seconds.
+- Seed 42; latitude −60° to 70°, full longitude; uniform area sampling.
+- 10,000 generated requests without feasibility filtering; mixed priority, duration (10/20/30/45/60/90/120 seconds), per-sat energy/data costs, optical/radar sensor, daylight rules, minimum and maximum pointing angles, variable time-window starts and ends, 1–3 simultaneous spacecraft, and 1–2 collections.
+- 30-second candidate-start grid, 5-second validation samples, exact collection endpoints.
+- Priority-first allocation, capacity one per spacecraft, 10-second cooldown, initial battery 400 Wh, reserve 40 Wh, storage 10,000 MB.
 
-**Not measured:** browser frame rate, GPU time, interaction latency, and sustained memory behavior. The app shows rendered FPS during playback, but no browser performance acceptance test was run. The synthetic workload does not establish real TLE propagation performance or continuous-time schedule accuracy.
+## Measured result
 
-Validation includes a randomized comparison of indexed candidate filtering against brute-force visibility and deterministic tests of capacity, cooldown, priority, daylight throughout dwell, and target exclusivity. These checks validate implemented sampled rules; they do not establish mission-grade orbital accuracy or global scheduling optimality.
+The current mixed-orbit, unfiltered workload measured **1.386 seconds for generation**, **40.885 seconds for scheduling**, **0.171 seconds for validation**, and **0.510 seconds for saving**. Solve/validate/save is **41.566 seconds**, which exceeds the 30-second budget. Actual timings vary with machine load; consult the JSON for the latest measured values.
+
+The deterministic workload produces **2,932 fully satisfied requests**, **73 partial requests**, and **6,995 unplanned requests**: **3,233 synchronized collections** containing **3,511 spacecraft instructions**. The validator checks **38,658 geometry samples** in addition to capacity, cooldown, windows, synchronization, repeats, sensors, energy, storage, and decision consistency.
+
+Packed ephemeris: **866,400 bytes**. Target playback buffer: **480,000 bytes**. Saved plan, input snapshot, decisions, instructions, and artifacts occupy about **22 MB** in the isolated database.
+
+The current catalog intentionally includes requests that may be infeasible. The scheduler is responsible for making every feasibility and allocation decision, which is reflected in the result above.
+
+## What is and is not measured
+
+This measures server generation, allocation, independent validation, and persistence. Tests also exercise HTTP availability during a worker job and MCP queries. Browser frame rate and visual interaction have not yet been measured. Rendering uses batched points, a bounded selected cone mesh, a coarse instruction interval index, and debounced hover requests, but those design choices alone do not establish a frame-rate result.
+
+Longer horizons, denser candidate grids, different ephemeris providers, larger fleets, and different request distributions need separate benchmarks. No claim of optimal scheduling or continuous-time access is made.

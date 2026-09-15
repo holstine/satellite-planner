@@ -1,7 +1,14 @@
 'use client';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type * as Cesium from 'cesium';
-import type { Playback } from '@/lib/orbit-api';
+import {
+  api,
+  type Explanation,
+  type Target,
+  type Playback,
+} from '@/lib/orbit-api';
+import { indexInstructions, sampleInterval } from '@/lib/plan-playback';
+import { CollectionDetails } from './workspace/plan-panel';
 
 type CAPI = typeof Cesium;
 declare global {
@@ -60,6 +67,13 @@ export default function OrbitGlobe(props: Props) {
   });
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
+  const [hover, setHover] = useState<{
+    x: number;
+    y: number;
+    detail?: Explanation;
+    request?: Target;
+    error?: string;
+  } | null>(null);
   const runtime = useRef<{
     c: CAPI;
     viewer: Cesium.Viewer;
@@ -136,26 +150,7 @@ export default function OrbitGlobe(props: Props) {
             color: c.Color.fromCssColorString('#52d8cd'),
           }),
         });
-        const spokes = Array.from({ length: 8 }, () =>
-          detail.add({
-            positions: [],
-            width: 1,
-            material: c.Material.fromType('Color', {
-              color: c.Color.fromCssColorString('#52d8cd').withAlpha(0.5),
-            }),
-          }),
-        );
-        const triangles = Array.from({ length: 32 }, () =>
-          viewer.entities.add({
-            show: false,
-            polygon: {
-              hierarchy: new c.PolygonHierarchy(),
-              perPositionHeight: true,
-              arcType: c.ArcType.NONE,
-              material: c.Color.fromCssColorString('#3ee1d0').withAlpha(0.055),
-            },
-          }),
-        );
+        let cone: Cesium.Primitive | null = null;
         let satPoints: Cesium.PointPrimitive[] = [];
         let satPositions: Cesium.Cartesian3[] = [];
         let targetPositions = new Map<number, Cesium.Cartesian3>();
@@ -168,16 +163,19 @@ export default function OrbitGlobe(props: Props) {
           detailKey = '';
         let lastPlayback: Playback | null = null;
         const scratch = new c.Cartesian3();
-        let activeBySecond = new Map<
-          number,
-          import('@/lib/orbit-api').Observation[]
-        >();
+        let activeIndex = indexInstructions([]);
+        let hoverGeneration = 0;
+        const hoverCache = new Map<string, Explanation | Target>();
         function rebuild() {
           const p = current.current;
           detail.show = !!p.playback;
-          triangles.forEach((t) => {
-            t.show = false;
-          });
+          if (cone) {
+            viewer.scene.primitives.remove(cone);
+            cone = null;
+          }
+          hoverGeneration++;
+          hoverCache.clear();
+          setHover(null);
           viewer.scene.primitives.remove(points);
           viewer.scene.primitives.remove(sats);
           points = viewer.scene.primitives.add(
@@ -189,7 +187,7 @@ export default function OrbitGlobe(props: Props) {
           targetPositions = new Map();
           lines.removeAll();
           linePool = [];
-          activeBySecond = new Map();
+          activeIndex = indexInstructions([]);
           const data = p.playback?.targets ?? p.points;
           const stride = p.playback ? 6 : 5;
           if (data)
@@ -203,6 +201,7 @@ export default function OrbitGlobe(props: Props) {
               const feasible = p.playback ? data[i + 4] === 1 : true;
               const scheduled = p.playback ? data[i + 5] === 1 : false;
               points.add({
+                id: { request: data[i] },
                 position: pos,
                 pixelSize: scheduled ? 4 : 3,
                 color: c.Color.fromCssColorString(
@@ -226,13 +225,7 @@ export default function OrbitGlobe(props: Props) {
                 }),
               );
             });
-            for (const event of p.playback.run.events) {
-              for (let second = event.start; second < event.end; second++) {
-                const list = activeBySecond.get(second) ?? [];
-                list.push(event);
-                activeBySecond.set(second, list);
-              }
-            }
+            activeIndex = indexInstructions(p.playback.run.instructions);
             if (lastPlayback !== p.playback) {
               seconds = 0;
               lastPlayback = p.playback;
@@ -246,9 +239,8 @@ export default function OrbitGlobe(props: Props) {
           const opts = current.current.options;
           horizon.show = opts.horizon;
           footprint.show = opts.cone;
-          spokes.forEach((s) => (s.show = opts.cone));
+          if (cone) cone.show = opts.cone;
           if (!opts.horizon && !opts.cone) {
-            triangles.forEach((t) => (t.show = false));
             return;
           }
           const ellipsoid = c.Ellipsoid.WGS84;
@@ -298,9 +290,12 @@ export default function OrbitGlobe(props: Props) {
             new c.Cartesian3(),
           );
           const up = c.Cartesian3.cross(down, side, new c.Cartesian3());
+          const run = current.current.playback!.run;
           const theta = c.Math.toRadians(
-            current.current.playback!.run.scenario.constraints
-              .max_off_nadir_deg,
+            Math.min(
+              run.scenario.constraints.max_off_nadir_deg,
+              run.satellites[current.current.selected].max_off_nadir_deg,
+            ),
           );
           const edge: Cesium.Cartesian3[] = [];
           for (let i = 0; i < 32; i++) {
@@ -333,17 +328,58 @@ export default function OrbitGlobe(props: Props) {
             );
           }
           footprint.positions = [...edge, edge[0]];
-          spokes.forEach((s, i) => (s.positions = [pos, edge[i * 4]]));
-          triangles.forEach((entity, i) => {
-            entity.show = opts.cone;
-            entity.polygon!.hierarchy = new c.ConstantProperty(
-              new c.PolygonHierarchy([
-                c.Cartesian3.clone(pos),
-                edge[i],
-                edge[(i + 1) % 32],
-              ]),
+          if (cone) {
+            viewer.scene.primitives.remove(cone);
+            cone = null;
+          }
+          if (opts.cone) {
+            // One closed triangle mesh: apex, ground rim, and a filled base.
+            const base = ellipsoid.scaleToGeocentricSurface(
+              pos,
+              new c.Cartesian3(),
             );
-          });
+            const vertices = [pos, ...edge, base];
+            const packed = new Float64Array(
+              vertices.flatMap((v) => [v.x, v.y, v.z]),
+            );
+            const indices: number[] = [];
+            for (let i = 0; i < edge.length; i++) {
+              const a = i + 1,
+                b = ((i + 1) % edge.length) + 1;
+              indices.push(0, b, a, edge.length + 1, a, b);
+            }
+            const attributes = new c.GeometryAttributes();
+            attributes.position = new c.GeometryAttribute({
+              componentDatatype: c.ComponentDatatype.DOUBLE,
+              componentsPerAttribute: 3,
+              values: packed,
+            });
+            const geometry = new c.Geometry({
+              attributes,
+              indices: new Uint16Array(indices),
+              primitiveType: c.PrimitiveType.TRIANGLES,
+              boundingSphere: c.BoundingSphere.fromVertices(packed),
+            });
+            cone = viewer.scene.primitives.add(
+              new c.Primitive({
+                geometryInstances: new c.GeometryInstance({
+                  geometry,
+                  attributes: {
+                    color: c.ColorGeometryInstanceAttribute.fromColor(
+                      c.Color.fromCssColorString('#3ee1d0').withAlpha(0.3),
+                    ),
+                  },
+                }),
+                appearance: new c.PerInstanceColorAppearance({
+                  flat: true,
+                  closed: true,
+                  translucent: true,
+                }),
+                asynchronous: false,
+                allowPicking: false,
+              }),
+            );
+          }
         }
         const removeTick = viewer.clock.onTick.addEventListener(() => {
           const now = performance.now(),
@@ -357,11 +393,12 @@ export default function OrbitGlobe(props: Props) {
                 p.playback.run.scenario.duration_seconds,
               );
             const { positions: array, run } = p.playback;
-            const si = Math.min(
-                Math.floor(seconds / run.sample_step),
-                run.sample_count - 2,
-              ),
-              alpha = (seconds - si * run.sample_step) / run.sample_step;
+            const { index: si, alpha } = sampleInterval(
+              seconds,
+              run.sample_step,
+              run.sample_count,
+              run.scenario.duration_seconds,
+            );
             const count = satPoints.length;
             for (let i = 0; i < count; i++) {
               const a = (si * count + i) * 3,
@@ -378,7 +415,7 @@ export default function OrbitGlobe(props: Props) {
               seconds,
               new c.JulianDate(),
             );
-            const active = activeBySecond.get(Math.floor(seconds)) ?? [];
+            const active = activeIndex.at(seconds);
             while (linePool.length < active.length)
               linePool.push(
                 lines.add({
@@ -393,7 +430,7 @@ export default function OrbitGlobe(props: Props) {
               const e = active[i];
               line.show = p.options.lines && !!e;
               if (e) {
-                const target = targetPositions.get(e.target_id);
+                const target = targetPositions.get(e.request_id);
                 if (target)
                   line.positions = [satPositions[e.satellite_index], target];
               }
@@ -426,6 +463,68 @@ export default function OrbitGlobe(props: Props) {
           frames++;
         });
         const click = new c.ScreenSpaceEventHandler(viewer.canvas);
+        let hoverTimer: ReturnType<typeof setTimeout> | undefined;
+        let lastHoverKey = '';
+        click.setInputAction((event: { endPosition: Cesium.Cartesian2 }) => {
+          clearTimeout(hoverTimer);
+          const point = c.Cartesian2.clone(event.endPosition);
+          const generation = ++hoverGeneration;
+          hoverTimer = setTimeout(() => {
+            const picked = viewer.scene.pick(point);
+            const id = picked?.id?.request;
+            if (id === undefined) {
+              setHover(null);
+              lastHoverKey = '';
+              return;
+            }
+            const planId = current.current.playback?.run.id;
+            const key = `${planId ?? 'catalog'}:${id}`;
+            const x = Math.max(
+              12,
+              Math.min(point.x + 18, viewer.canvas.clientWidth - 326),
+            );
+            const y = Math.max(
+              12,
+              Math.min(point.y + 16, viewer.canvas.clientHeight - 360),
+            );
+            const show = (value: Explanation | Target) =>
+              setHover({
+                x,
+                y,
+                ...('decision' in value
+                  ? { detail: value }
+                  : { request: value }),
+              });
+            const cached = hoverCache.get(key);
+            if (cached) {
+              show(cached);
+              return;
+            }
+            if (key !== lastHoverKey) setHover({ x, y });
+            lastHoverKey = key;
+            void api<Explanation | Target>(
+              planId ? `/plans/${planId}/requests/${id}` : `/requests/${id}`,
+            )
+              .then((value) => {
+                if (disposed || generation !== hoverGeneration) return;
+                if (hoverCache.size >= 128)
+                  hoverCache.delete(hoverCache.keys().next().value!);
+                hoverCache.set(key, value);
+                show(value);
+              })
+              .catch((e) => {
+                if (!disposed && generation === hoverGeneration)
+                  setHover({ x, y, error: String(e) });
+              });
+          }, 120);
+        }, c.ScreenSpaceEventType.MOUSE_MOVE);
+        const leave = () => {
+          clearTimeout(hoverTimer);
+          hoverGeneration++;
+          setHover(null);
+          lastHoverKey = '';
+        };
+        viewer.canvas.addEventListener('mouseleave', leave);
         click.setInputAction((event: { position: Cesium.Cartesian2 }) => {
           const picked = viewer.scene.pick(event.position);
           if (picked?.id?.satellite !== undefined)
@@ -443,6 +542,8 @@ export default function OrbitGlobe(props: Props) {
         rebuild();
         setReady(true);
         cleanup = () => {
+          clearTimeout(hoverTimer);
+          viewer.canvas.removeEventListener('mouseleave', leave);
           removeTick();
           removeRender();
           click.destroy();
@@ -465,6 +566,36 @@ export default function OrbitGlobe(props: Props) {
   return (
     <div className="globe-root">
       <div className="cesium-host" ref={container} />
+      {hover && (
+        <div
+          className="target-hover"
+          role="tooltip"
+          style={{ left: hover.x, top: hover.y }}
+        >
+          {hover.detail ? (
+            <CollectionDetails detail={hover.detail} />
+          ) : hover.request ? (
+            <>
+              <span className="eyebrow">CATALOG REQUEST</span>
+              <h3>{hover.request.name}</h3>
+              <p>
+                {hover.request.duration_seconds}s ·{' '}
+                {hover.request.satellites_required} simultaneous spacecraft ·{' '}
+                {hover.request.energy_wh} Wh / sat
+              </p>
+              <p>
+                {hover.request.collections_required} collections requested ·{' '}
+                {hover.request.sensor}
+              </p>
+              <small>
+                Build a plan to see collection times and scheduling decisions.
+              </small>
+            </>
+          ) : (
+            <p>{hover.error ?? 'Loading collection details…'}</p>
+          )}
+        </div>
+      )}
       {!ready && !error && (
         <div className="globe-notice">Loading Cesium globe…</div>
       )}

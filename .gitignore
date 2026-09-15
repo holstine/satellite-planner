@@ -40,5 +40,6 @@ next-env.d.ts
 /data/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
 *.tsbuildinfo
 /public/cesium/

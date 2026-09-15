@@ -1,0 +1,54 @@
+{
+  "generation": {
+    "generated": 10000,
+    "requested": 10000,
+    "complete": true,
+    "elapsed_seconds": 1.386,
+    "seed": 42,
+    "note": "All requests created. Feasibility and allocation are evaluated only when scheduling."
+  },
+  "solve_seconds": 40.885,
+  "validation_seconds": 0.171,
+  "save_seconds": 0.51,
+  "counts": {
+    "targets": 10000,
+    "feasible": 5942,
+    "scheduled": 3005,
+    "inaccessible": 4058,
+    "unassigned": 2937,
+    "observations": 3511,
+    "collections": 3233,
+    "requested_collections": 11022,
+    "candidates": 8947763,
+    "unplanned": 6995,
+    "planned": 2932,
+    "partial": 73
+  },
+  "validation": {
+    "passed": true,
+    "instructions_checked": 3511,
+    "collections_checked": 3233,
+    "geometry_samples": 38658,
+    "checks": [
+      "membership",
+      "time_windows",
+      "duration",
+      "synchronized_spacecraft",
+      "revisit",
+      "capacity",
+      "cooldown",
+      "battery",
+      "storage",
+      "sensors",
+      "sampled_angles",
+      "sampled_daylight",
+      "decisions"
+    ]
+  },
+  "positions_bytes": 866400,
+  "targets_bytes": 480000,
+  "database_bytes": 22032384,
+  "total_seconds": 43.056,
+  "solve_budget_seconds": 30,
+  "solve_budget_passed": false
+}
