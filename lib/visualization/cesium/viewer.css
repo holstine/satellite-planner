@@ -1,0 +1,5 @@
+.visualization-host .cesium-widget,
+.visualization-host .cesium-widget canvas {
+  width: 100%;
+  height: 100%;
+}

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { indexInstructions, sampleInterval } from '../lib/plan-playback.ts';
+import {
+  indexInstructions,
+  sampleInterval,
+} from '../lib/visualization/timeline.ts';
 
 test('interval lookup agrees with brute force across starts, ends, and reverse seeks', () => {
   const instructions = Array.from({ length: 10000 }, (_, i) => ({
@@ -31,4 +34,11 @@ test('playback interpolation clamps at both ends', () => {
   assert.deepEqual(sampleInterval(-1, 10, 7), { index: 0, alpha: 0 });
   assert.deepEqual(sampleInterval(62.5, 10, 8, 65), { index: 6, alpha: 0.5 });
   assert.deepEqual(sampleInterval(65, 10, 8, 65), { index: 6, alpha: 1 });
+});
+
+test('fractional instructions crossing a bucket boundary remain visible', () => {
+  const instruction = { start: 29.9, end: 30.1 };
+  const index = indexInstructions([instruction]);
+  assert.deepEqual(index.at(30), [instruction]);
+  assert.deepEqual(index.at(30.1), []);
 });

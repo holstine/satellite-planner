@@ -53,17 +53,19 @@ Only name, latitude, and longitude are required. Export CSV to get the complete 
 
 ## Replaceable parts
 
-| Part | Contract / implementation | Responsibility |
-| --- | --- | --- |
-| Fleet | `Spacecraft`, `EphemerisProvider`; `server/fleet.py` | Initial state, TLE validation, demo propagation, sampled ephemeris interpolation |
-| Requests | `CollectionRequest`; `server/requests.py` | Validation, CRUD via repository, atomic import/export, reproducible generation |
-| Scheduling | `Scheduler`; `server/scheduling.py`, `server/visibility.py` | Indexed access search and allocation policy |
-| Plan | `PlanSnapshot`, `PlanResult`, `CollectionInstruction`, `RequestDecision`; `server/plans.py` | Immutable instructions, independent validation, evidence and timeline queries |
-| Visualization | `Playback`, `GlobeOptions`; `components/orbit-globe.tsx`, `lib/plan-playback.ts` | Cesium batches, interval-indexed playback, selected details and hover inspection |
-| Database | `Repository`; `server/storage.py` | SQLite migration, catalogs, jobs, immutable plans, indexed decisions/instructions, binary artifacts |
-| Application / transports | `server/application.py`, `server/app.py`, `server/mcp_server.py` | Shared application services used by REST and MCP; bounded process worker |
+| Part                     | Contract / implementation                                                                          | Responsibility                                                                                      |
+| ------------------------ | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Fleet                    | `Spacecraft`, `EphemerisProvider`; `server/fleet.py`                                               | Initial state, TLE validation, demo propagation, sampled ephemeris interpolation                    |
+| Requests                 | `CollectionRequest`; `server/requests.py`                                                          | Validation, CRUD via repository, atomic import/export, reproducible generation                      |
+| Scheduling               | `Scheduler`; `server/scheduling.py`, `server/visibility.py`                                        | Indexed access search and allocation policy                                                         |
+| Plan                     | `PlanSnapshot`, `PlanResult`, `CollectionInstruction`, `RequestDecision`; `server/plans.py`        | Immutable instructions, independent validation, evidence and timeline queries                       |
+| Visualization            | `VisualScene`, `ViewerAdapter`, `ViewerFactory`; `lib/visualization/`, `components/visualization/` | Renderer-independent playback, replaceable viewer, separate request inspection UI                   |
+| Database                 | `Repository`; `server/storage.py`                                                                  | SQLite migration, catalogs, jobs, immutable plans, indexed decisions/instructions, binary artifacts |
+| Application / transports | `server/application.py`, `server/app.py`, `server/mcp_server.py`                                   | Shared application services used by REST and MCP; bounded process worker                            |
 
 Provider protocols are in [server/contracts.py](server/contracts.py). The built-in scheduler implementations (`priority-greedy`, `earliest-deadline`) use the same contracts and result validator. Add a trusted Python module exposing `register(providers)` and set `ORBIT_PROVIDER_MODULES=my_package.providers` to register another scheduler or ephemeris provider. Both the API process and worker load this registry. A scheduler implements `solve(plan_id, snapshot, ephemeris, progress) -> SolvedPlan`; an ephemeris provider returns finite ECEF meters shaped `(time, spacecraft, 3)`.
+
+The viewer is selected in `app/page.tsx` and injected into `Planner`. All Cesium runtime code and CSS live in `lib/visualization/cesium/`. The Cesium adapter can attach planning layers to an existing, host-owned viewer; playback and request inspection do not depend on Cesium. See [VISUALIZATION.md](VISUALIZATION.md) for contracts, ownership rules, and integration examples.
 
 Set `ORBIT_REPOSITORY_FACTORY=my_package.storage:RepositoryClass` to replace storage. The factory must implement the full repository protocol with durable, concurrency-safe job state. `Application(factory=..., options=...)` injects factory options; the same configuration is passed to the worker. No database-specific SQL is exposed to the agent.
 

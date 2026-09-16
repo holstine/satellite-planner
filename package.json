@@ -10,6 +10,7 @@
     "build": "vinext build",
     "start": "vinext start --hostname 127.0.0.1 --port 5173",
     "lint": "oxlint",
+    "test:visualization": "node --experimental-strip-types --test tests/*.test.mjs",
     "format": "oxfmt",
     "assets": "node scripts/cesium-assets.mjs",
     "predev": "npm run assets",

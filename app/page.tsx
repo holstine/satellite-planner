@@ -1,5 +1,6 @@
 'use client';
 import Planner from '@/components/planner';
+import { createCesiumViewer } from '@/lib/visualization/cesium/factory';
 export default function Home() {
-  return <Planner />;
+  return <Planner viewerFactory={createCesiumViewer} />;
 }

@@ -376,14 +376,9 @@ details[open] {
   overflow: hidden;
 }
 .globe-root,
-.cesium-host {
+.visualization-host {
   position: absolute;
   inset: 0;
-}
-.cesium-widget,
-.cesium-widget canvas {
-  width: 100%;
-  height: 100%;
 }
 .globe-notice {
   position: absolute;

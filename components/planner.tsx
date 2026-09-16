@@ -11,7 +11,12 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
-import OrbitGlobe, { type GlobeHandle, type GlobeOptions } from './orbit-globe';
+import PlanVisualization from './visualization/plan-visualization';
+import type {
+  ViewerFactory,
+  VisualizationHandle,
+  ViewOptions,
+} from '@/lib/visualization/contracts';
 import SchedulePanel from './workspace/schedule-panel';
 import RequestPanel from './workspace/request-panel';
 import FleetPanel from './workspace/fleet-panel';
@@ -32,7 +37,11 @@ import {
   type Scenario,
 } from '@/lib/orbit-api';
 
-export default function Planner() {
+export default function Planner({
+  viewerFactory,
+}: {
+  viewerFactory: ViewerFactory;
+}) {
   const [error, setError] = useState(''),
     [notice, setNotice] = useState(''),
     [connected, setConnected] = useState(false);
@@ -63,14 +72,14 @@ export default function Planner() {
     [fps, setFps] = useState(0),
     [active, setActive] = useState(0),
     [layers, setLayers] = useState(false);
-  const [options, setOptions] = useState<GlobeOptions>({
+  const [options, setOptions] = useState<ViewOptions>({
     targets: true,
     lines: true,
     cone: true,
     horizon: true,
     feasibleOnly: false,
   });
-  const handle = useRef<GlobeHandle | null>(null);
+  const handle = useRef<VisualizationHandle | null>(null);
   const working = !!job && ['queued', 'running'].includes(job.status);
   const act = useCallback(async (fn: () => Promise<void>) => {
     setError('');
@@ -283,7 +292,8 @@ export default function Planner() {
         </aside>
         <div className="visual-panel">
           <div className="map-area">
-            <OrbitGlobe
+            <PlanVisualization
+              factory={viewerFactory}
               points={points}
               playback={playback}
               playing={playing}
