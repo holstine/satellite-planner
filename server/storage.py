@@ -2,9 +2,11 @@
 
 import json
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +16,22 @@ from .orbits import demo_fleet
 
 def encode(value):
     return json.dumps(value, separators=(",", ":"), allow_nan=False)
+
+
+def unique_plan_name(name, used):
+    """One-up duplicate names while preserving the requested stem."""
+    name = name.strip() or "Observation plan"
+    if name not in used:
+        return name
+    match = re.fullmatch(r"(.*?)(?: \((\d+)\))?", name)
+    stem, suffix = match.groups()
+    number = int(suffix or 1)
+    while True:
+        number += 1
+        ending = f" ({number})"
+        candidate = stem[: 120 - len(ending)] + ending
+        if candidate not in used:
+            return candidate
 
 
 class SQLiteRepository:
@@ -73,6 +91,7 @@ class SQLiteRepository:
                 CREATE INDEX IF NOT EXISTS decisions_filter ON decisions(plan_id,status,reason);
                 CREATE TABLE IF NOT EXISTS artifacts(plan_id TEXT NOT NULL REFERENCES plans(id), name TEXT NOT NULL,
                     data BLOB NOT NULL, PRIMARY KEY(plan_id,name));
+                CREATE TABLE IF NOT EXISTS weather_cache(key TEXT PRIMARY KEY, payload TEXT NOT NULL);
             """)
             if version < 2:
                 if legacy:
@@ -196,6 +215,27 @@ class SQLiteRepository:
             row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
             return json.loads(row[0]) if row else default
 
+    def weather_cells(self, keys):
+        result = {}
+        keys = list(keys)
+        with self.connection() as conn:
+            for start in range(0, len(keys), 500):
+                batch = keys[start : start + 500]
+                rows = conn.execute(
+                    "SELECT key,payload FROM weather_cache WHERE key IN ("
+                    + ",".join("?" for _ in batch)
+                    + ")",
+                    batch,
+                )
+                result.update({r[0]: json.loads(r[1]) for r in rows})
+        return result
+
+    def save_weather_cells(self, cells):
+        with self.connection() as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO weather_cache VALUES(?,?)", [(c["key"], encode(c)) for c in cells]
+            )
+
     def set_setting(self, key, value):
         with self.connection() as conn:
             conn.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, encode(value)))
@@ -281,9 +321,17 @@ class SQLiteRepository:
 
     def save_plan(self, solved, snapshot):
         result = solved.result.model_dump(mode="json")
+        snapshot = deepcopy(snapshot)
         instructions, decisions = result.pop("instructions"), result.pop("decisions")
         requests = {r["id"]: r for r in snapshot["requests"]}
         with self.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            used = {
+                json.loads(row[0])["scenario"]["name"] for row in conn.execute("SELECT metadata FROM plans")
+            }
+            name = unique_plan_name(result["scenario"]["name"], used)
+            result["scenario"]["name"] = name
+            snapshot["scenario"]["name"] = name
             conn.execute(
                 "INSERT INTO plans VALUES(?,?,?,?)",
                 (result["id"], datetime.now(UTC).isoformat(), encode(result), encode(snapshot)),
@@ -295,6 +343,7 @@ class SQLiteRepository:
                     for r in instructions
                 ],
             )
+
             conn.executemany(
                 "INSERT INTO decisions VALUES(?,?,?,?,?,?)",
                 [
@@ -316,6 +365,8 @@ class SQLiteRepository:
                     (result["id"], "targets.bin", solved.targets),
                 ],
             )
+
+        solved.result.scenario.name = name
 
     def list_plans(self, limit=30):
         with self.connection() as conn:

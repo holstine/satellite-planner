@@ -53,6 +53,12 @@ def generate_requests(spec, progress):
         batch = []
         for i in range(n):
             options = {}
+            if spec.randomize_weather:
+                options.update(
+                    max_cloud_cover_pct=float(rng.choice([10, 25, 50, 75, 100])),
+                    max_precipitation_mm=float(rng.choice([0, 0.5, 2, 5])),
+                    max_wind_speed_mps=float(rng.choice([5, 10, 15, 25])),
+                )
             if spec.randomize_parameters:
                 duration = int(rng.choice([10, 20, 30, 45, 60, 90, 120]))
                 start = (
@@ -70,7 +76,7 @@ def generate_requests(spec, progress):
                     if start
                     else None
                 )
-                options = dict(
+                options.update(
                     duration_seconds=duration,
                     energy_wh=float(rng.integers(2, 16)),
                     data_mb=float(rng.integers(10, 151)),

@@ -5,6 +5,7 @@ from scipy.spatial import cKDTree
 
 from .domain import DomainError
 from .orbits import B, sun_direction, target_vectors
+from .weather import WeatherEvaluator
 
 
 def candidate_indices(tree, satellite, max_off_nadir):
@@ -47,13 +48,29 @@ class Opportunities:
         self.maximum_off = np.array(
             [min(r["max_off_nadir_deg"], self.rules.max_off_nadir_deg) for r in self.rows]
         )
-        self.daylight = np.array([r["daylight_only"] or self.rules.daylight_only for r in self.rows])
+        self.maximum_search_angle = float(self.maximum_off.max(initial=0))
+        self.request_off_cos = np.cos(np.deg2rad(self.maximum_off))
+        self.spacecraft_off_cos = np.cos(np.deg2rad([s["max_off_nadir_deg"] for s in self.fleet]))
+        sensor_bits = {"optical": 1, "radar": 2, "infrared": 4}
+        self.request_sensors = np.array(
+            [sensor_bits[r["sensor"]] for r in self.rows], dtype=np.uint8
+        )
+        self.spacecraft_sensors = np.array(
+            [sum(sensor_bits[sensor] for sensor in set(s["sensors"])) for s in self.fleet],
+            dtype=np.uint8,
+        )
+        self.daylight = np.array([
+            r["daylight_only"] or self.rules.daylight_only
+            or (self.rules.optical_daylight_only and r["sensor"] == "optical")
+            for r in self.rows
+        ])
         self.sun_minimum = np.sin(
             np.deg2rad(
                 [
                     max(
                         r["min_sun_elevation_deg"] if r["daylight_only"] else -90,
                         self.rules.min_sun_elevation_deg if self.rules.daylight_only else -90,
+                        0 if self.rules.optical_daylight_only and r["sensor"] == "optical" else -90,
                     )
                     for r in self.rows
                 ]
@@ -70,6 +87,7 @@ class Opportunities:
             ]
         )
         self.enabled = np.array([r["enabled"] for r in self.rows], dtype=bool)
+        self.weather = WeatherEvaluator(snapshot)
         self.evidence = {
             key: np.zeros(len(self.rows), dtype=np.int64)
             for key in (
@@ -84,6 +102,8 @@ class Opportunities:
                 "battery_rejections",
                 "storage_rejections",
                 "revisit_rejections",
+                "weather_rejections",
+                "weather_unavailable",
             )
         }
 
@@ -91,16 +111,14 @@ class Opportunities:
         delta = satellite - self.xyz[pool]
         unit = delta / np.linalg.norm(delta, axis=1)[:, None]
         elevation = np.einsum("ij,ij->i", unit, self.normals[pool])
-        off = unit @ (satellite / np.linalg.norm(satellite))
+        off = np.einsum("ij,j->i", unit, satellite / np.linalg.norm(satellite))
         angles = (elevation >= self.minimum_elevation[pool] - 1e-12) & (
             off <= self.minimum_off_cos[pool] + 1e-12
         )
-        angles &= (
-            off
-            >= np.cos(np.deg2rad(np.minimum(self.maximum_off[pool], self.fleet[si]["max_off_nadir_deg"])))
-            - 1e-12
+        angles &= off >= np.maximum(self.request_off_cos[pool], self.spacecraft_off_cos[si]) - 1e-12
+        sun_ok = ~self.daylight[pool] | (
+            np.einsum("ij,j->i", self.normals[pool], sun) >= self.sun_minimum[pool] - 1e-12
         )
-        sun_ok = ~self.daylight[pool] | ((self.normals[pool] @ sun) >= self.sun_minimum[pool] - 1e-12)
         return angles, sun_ok
 
     def scan(self):
@@ -113,6 +131,11 @@ class Opportunities:
             eligible = (
                 self.enabled & (self.window_start <= offset) & (offset + self.durations <= self.window_end)
             )
+            if np.any(self.weather.required):
+                ok, missing, rejected = self.weather.evaluate(offset, offset + self.durations)
+                self.evidence["weather_unavailable"][eligible & missing] += 1
+                self.evidence["weather_rejections"][eligible & rejected] += 1
+                eligible &= ok
             available = {}
             first = int(np.searchsorted(self.times, offset))
             for si, spacecraft in enumerate(self.fleet):
@@ -122,7 +145,7 @@ class Opportunities:
                     candidate_indices(
                         self.tree,
                         self.tracks[first, si],
-                        min(float(self.maximum_off.max(initial=0)), spacecraft["max_off_nadir_deg"]),
+                        min(self.maximum_search_angle, spacecraft["max_off_nadir_deg"]),
                     ),
                     dtype=int,
                 )
@@ -130,7 +153,7 @@ class Opportunities:
                 if not len(pool):
                     continue
                 self.evidence["spatial_candidates"][pool] += 1
-                sensors = np.array([self.rows[i]["sensor"] in spacecraft["sensors"] for i in pool])
+                sensors = (self.request_sensors[pool] & self.spacecraft_sensors[si]) != 0
                 self.evidence["sensor_rejections"][pool[~sensors]] += 1
                 pool = pool[sensors]
                 if not len(pool):

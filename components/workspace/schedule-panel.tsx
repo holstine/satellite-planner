@@ -49,6 +49,39 @@ export default function SchedulePanel({
           max={1440}
           onChange={(v) => onChange({ ...scenario, duration_seconds: v * 60 })}
         />
+        <button
+          className="quiet"
+          onClick={() =>
+            onChange({
+              ...scenario,
+              start: new Date().toISOString().slice(0, 16) + ':00Z',
+            })
+          }
+        >
+          Use current UTC time
+        </button>
+        <Toggle
+          label="Affected by weather"
+          checked={c.affected_by_weather === true}
+          onChange={(v) => rule('affected_by_weather', v)}
+        />
+        {c.affected_by_weather && (
+          <>
+            <Numeric
+              label="Maximum cloud cover (%)"
+              value={c.max_cloud_cover_pct}
+              min={0}
+              max={100}
+              onChange={(v) => rule('max_cloud_cover_pct', v)}
+            />
+            <p className="hint">
+              Cloud cover limits optical and infrared collections; stricter
+              request limits apply. Radar is unaffected unless its request has a
+              weather limit. Refresh the forecast in Weather first. Missing
+              weather prevents affected collections.
+            </p>
+          </>
+        )}
         <div className="field">
           <span>Scheduling strategy</span>
           <Choice
@@ -102,6 +135,18 @@ export default function SchedulePanel({
           checked={c.daylight_only}
           onChange={(v) => rule('daylight_only', v)}
         />
+        <Toggle
+          label="Require daylight for optical collections"
+          checked={c.optical_daylight_only}
+          onChange={(v) => rule('optical_daylight_only', v)}
+        />
+        <p className="hint">
+          {c.optical_daylight_only
+            ? 'Optical collections require the sun above the target horizon, even if a request permits nighttime.'
+            : 'Optical night collections are allowed when individual requests permit them.'}{' '}
+          Infrared and radar can operate at night unless another daylight rule
+          applies.
+        </p>
         <div className="field-pair">
           <Numeric
             label="Min elevation (°)"

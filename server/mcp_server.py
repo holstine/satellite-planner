@@ -6,6 +6,7 @@ from mcp.server import MCPServer
 
 from .domain import (
     BulkRequests,
+    CollectionEdit,
     CollectionRequest,
     Constraints,
     DemoFleet,
@@ -16,6 +17,8 @@ from .domain import (
     Scenario,
     Spacecraft,
     TLEImport,
+    WeatherRefresh,
+    WhatIfSpec,
 )
 
 
@@ -134,6 +137,93 @@ def create_mcp(service):
         return await service.submit("schedule", scenario)
 
     @mcp.tool()
+    async def what_if_plan(plan_id: str, changes: WhatIfSpec) -> dict[str, object]:
+        """Create a validated immutable variant. edit keeps existing collections; fill schedules around them; reschedule rearranges everything. Batch request/fleet changes and collection add/remove/move operations are atomic. save=false previews validation/comparison only. Original plans and live catalogs are never changed. Poll job_status for validation failures or new plan_id."""
+        return await service.submit_whatif(plan_id, changes)
+
+    @mcp.tool()
+    async def add_plan_collection(
+        plan_id: str, request_id: int, start_seconds: int, spacecraft_ids: list[str]
+    ) -> dict[str, object]:
+        """Add a synchronized collection in a new variant, only if full plan validation passes."""
+        return await service.submit_whatif(
+            plan_id,
+            WhatIfSpec(
+                collections=[
+                    CollectionEdit(
+                        action="add",
+                        request_id=request_id,
+                        start_seconds=start_seconds,
+                        spacecraft_ids=spacecraft_ids,
+                    )
+                ]
+            ),
+        )
+
+    @mcp.tool()
+    async def remove_plan_collection(plan_id: str, collection_id: str) -> dict[str, object]:
+        """Remove all participants of a collection in a new variant; recompute resources and decisions."""
+        return await service.submit_whatif(
+            plan_id, WhatIfSpec(collections=[CollectionEdit(action="remove", collection_id=collection_id)])
+        )
+
+    @mcp.tool()
+    async def move_plan_collection(
+        plan_id: str, collection_id: str, start_seconds: int, spacecraft_ids: list[str] | None = None
+    ) -> dict[str, object]:
+        """Try a new time/spacecraft for a collection; invalid variants are rejected with no saved plan."""
+        return await service.submit_whatif(
+            plan_id,
+            WhatIfSpec(
+                collections=[
+                    CollectionEdit(
+                        action="move",
+                        collection_id=collection_id,
+                        start_seconds=start_seconds,
+                        spacecraft_ids=spacecraft_ids,
+                    )
+                ]
+            ),
+        )
+
+    @mcp.tool()
+    def compare_plans(original_plan_id: str, variant_plan_id: str) -> dict[str, object]:
+        """Report added, removed, rearranged and retained collections, plus count deltas."""
+        return service.compare(original_plan_id, variant_plan_id)
+
+    @mcp.tool()
+    async def refresh_weather(spec: WeatherRefresh) -> dict[str, object]:
+        """Fetch real hourly model weather into the cache in a background job. Uses plan snapshot locations if plan_id is set, otherwise current catalog. Acquisition is rate-limited separately from scheduling. max_locations bounds new downloads; cached locations are reused for one hour."""
+        return await service.refresh_weather(spec)
+
+    @mcp.tool()
+    def query_cached_weather(spec: WeatherRefresh, offset: int = 0, limit: int = 10) -> dict[str, object]:
+        """Inspect fresh cached cloud %, precipitation mm/hour and wind m/s, with source and timestamps. Does not download. Missing coverage cannot satisfy weather constraints."""
+        page(offset, limit)
+        captured = service.weather.capture(service.weather_input(spec))
+        cells = list(captured.cells.values())
+        return dict(
+            total=len(cells),
+            captured_at=captured.captured_at,
+            attribution=captured.attribution,
+            items=[c.model_dump() for c in cells[offset : offset + limit]],
+        )
+
+    @mcp.tool()
+    def request_plan_weather(plan_id: str, request_id: int) -> dict[str, object]:
+        """Read the exact saved weather evidence for a request, not today's replacement forecast."""
+        evidence = service.repository.decision(plan_id, request_id)
+        weather = service.repository.plan_snapshot(plan_id).get("weather", {})
+        key = weather.get("request_cells", {}).get(str(request_id))
+        return dict(
+            request=evidence["request"],
+            decision=evidence["decision"],
+            captured_at=weather.get("captured_at"),
+            cell=weather.get("cells", {}).get(key),
+            attribution=weather.get("attribution"),
+        )
+
+    @mcp.tool()
     def list_jobs() -> list[dict]:
         """List the 30 most recent background jobs."""
         return service.repository.list_jobs()
@@ -202,5 +292,13 @@ def create_mcp(service):
     @mcp.resource("orbit://schema/scenario")
     def scenario_schema() -> dict[str, object]:
         return Scenario.model_json_schema()
+
+    @mcp.resource("orbit://schema/whatif")
+    def whatif_schema() -> dict[str, object]:
+        return WhatIfSpec.model_json_schema()
+
+    @mcp.resource("orbit://schema/weather-refresh")
+    def weather_schema() -> dict[str, object]:
+        return WeatherRefresh.model_json_schema()
 
     return mcp

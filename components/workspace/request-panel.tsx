@@ -54,6 +54,7 @@ export default function RequestPanel({
     [seed, setSeed] = useState(42),
     [random, setRandom] = useState(true);
   const [replace, setReplace] = useState(true);
+  const [randomWeather, setRandomWeather] = useState(false);
   const [bounds, setBounds] = useState({
     south: -60,
     north: 70,
@@ -189,10 +190,14 @@ export default function RequestPanel({
               label="Sensor"
               value={editor.sensor}
               onChange={(v) =>
-                setEditor({ ...editor, sensor: v as 'optical' | 'radar' })
+                setEditor({
+                  ...editor,
+                  sensor: v as 'optical' | 'infrared' | 'radar',
+                })
               }
               items={[
                 { value: 'optical', label: 'Optical sensor' },
+                { value: 'infrared', label: 'Infrared sensor' },
                 { value: 'radar', label: 'Radar sensor' },
               ]}
             />
@@ -206,6 +211,38 @@ export default function RequestPanel({
               checked={editor.enabled}
               onChange={(v) => setEditor({ ...editor, enabled: v })}
             />
+            <fieldset>
+              <legend>Weather requirements · blank means unrestricted</legend>
+              {(
+                [
+                  ['max_cloud_cover_pct', 'Maximum cloud cover (%)', 100],
+                  [
+                    'max_precipitation_mm',
+                    'Maximum hourly precipitation (mm)',
+                    1000,
+                  ],
+                  ['max_wind_speed_mps', 'Maximum wind at 10 m (m/s)', 200],
+                ] as const
+              ).map(([key, label, max]) => (
+                <label className="field" key={key}>
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={max}
+                    step="any"
+                    value={editor[key] ?? ''}
+                    onChange={(e) =>
+                      setEditor({
+                        ...editor,
+                        [key]:
+                          e.target.value === '' ? null : Number(e.target.value),
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </fieldset>
             <div className="inline-controls">
               <button className="primary" type="submit">
                 Save request
@@ -298,6 +335,17 @@ export default function RequestPanel({
           onChange={setRandom}
         />
         <Toggle
+          label="Include random weather requirements"
+          checked={randomWeather}
+          onChange={setRandomWeather}
+        />
+        {randomWeather && (
+          <p className="hint">
+            Refresh weather before scheduling. Requests with missing weather
+            will remain unplanned.
+          </p>
+        )}
+        <Toggle
           label="Replace current request catalog"
           checked={replace}
           onChange={setReplace}
@@ -343,6 +391,7 @@ export default function RequestPanel({
                     count,
                     seed,
                     randomize_parameters: random,
+                    randomize_weather: randomWeather,
                     replace_existing: replace,
                   },
                   'POST',

@@ -122,7 +122,7 @@ export default function FleetPanel({
                 />
               </div>
             )}
-            {(['optical', 'radar'] as const).map((sensor) => (
+            {(['optical', 'infrared', 'radar'] as const).map((sensor) => (
               <Toggle
                 key={sensor}
                 label={`${sensor} sensor`}

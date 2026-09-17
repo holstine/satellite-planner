@@ -1,4 +1,7 @@
 import type * as Cesium from 'cesium';
+import { createLayers } from './layers.ts';
+import { createBasemap } from './basemap.ts';
+import { spectra, spectrumStyle } from '../spectra.ts';
 import type {
   ViewerAdapter,
   ViewerEvents,
@@ -25,6 +28,8 @@ export function attachCesiumViewer(
   settings: CesiumAttachmentOptions = {},
 ): ViewerAdapter {
   const owner = {};
+  const overlays = createLayers(c, viewer, owner);
+  const basemap = createBasemap(c, viewer, events.onError);
   const owned = viewer.scene.primitives.add(
     new c.PrimitiveCollection(),
   ) as Cesium.PrimitiveCollection;
@@ -62,6 +67,12 @@ export function attachCesiumViewer(
   const targetPoints: { point: Cesium.PointPrimitive; feasible: boolean }[] =
     [];
   let linePool: Cesium.Polyline[] = [];
+  const spectrumColors = new Map(
+    Object.values(spectra).map(({ color }) => [
+      color,
+      c.Color.fromCssColorString(color).withAlpha(0.9),
+    ]),
+  );
   let detailKey = '';
   let detailStyle = '';
   let lastDetail = -Infinity;
@@ -73,6 +84,7 @@ export function attachCesiumViewer(
   const leave = () => {
     clearTimeout(hoverTimer);
     events.onHover(null);
+    events.onLayerHover?.(null);
   };
   viewer.canvas.addEventListener('mouseleave', leave);
   click.setInputAction((event: { endPosition: Cesium.Cartesian2 }) => {
@@ -80,9 +92,12 @@ export function attachCesiumViewer(
     const point = c.Cartesian2.clone(event.endPosition);
     // Immediately invalidate outstanding application-side detail requests.
     events.onHover(null);
+    events.onLayerHover?.(null);
     hoverTimer = setTimeout(() => {
       if (destroyed || viewer.isDestroyed()) return;
       const id = viewer.scene.pick(point)?.id;
+      if (id?.owner === owner && id.layer)
+        events.onLayerHover?.({ ...id.layer, x: point.x, y: point.y });
       events.onHover(
         id?.owner === owner && id.request !== undefined
           ? { requestId: id.request, x: point.x, y: point.y }
@@ -292,6 +307,8 @@ export function attachCesiumViewer(
     },
     render(frame: VisualFrame, state: ViewState) {
       if (destroyed || viewer.isDestroyed() || !scene) return;
+      overlays.update(state.layers ?? [], frame.unixMs);
+      basemap.update(state.basemap);
       points.show = state.options.targets;
       if (lastFeasibleOnly !== state.options.feasibleOnly) {
         for (const { point, feasible } of targetPoints)
@@ -326,7 +343,12 @@ export function attachCesiumViewer(
         const satellite =
           instruction && satPositions[instruction.spacecraftIndex];
         line.show = state.options.lines && !!target && !!satellite;
-        if (line.show) line.positions = [satellite, target!];
+        if (line.show) {
+          line.positions = [satellite, target!];
+          line.material.uniforms.color = spectrumColors.get(
+            spectrumStyle(instruction.sensor).color,
+          );
+        }
       });
       const selected = satPositions[state.selected];
       detail.show = !!selected && !!scene.timeline;
@@ -367,6 +389,8 @@ export function attachCesiumViewer(
       viewer.canvas.removeEventListener('mouseleave', leave);
       removeRender();
       click.destroy();
+      overlays.destroy();
+      basemap.destroy();
       if (!viewer.isDestroyed()) viewer.scene.primitives.remove(owned);
       else if (!owned.isDestroyed()) owned.destroy();
     },

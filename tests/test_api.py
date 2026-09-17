@@ -188,6 +188,13 @@ def test_mcp_tools_share_catalog_and_saved_explanations(client, application):
                 "query_decisions",
                 "save_spacecraft",
                 "generate_requests",
+                "what_if_plan",
+                "add_plan_collection",
+                "remove_plan_collection",
+                "move_plan_collection",
+                "compare_plans",
+                "refresh_weather",
+                "request_plan_weather",
             } <= names
             saved = await mcp.call_tool("save_request", {"request": request(energy_wh=7)})
             assert not saved.is_error
@@ -195,6 +202,14 @@ def test_mcp_tools_share_catalog_and_saved_explanations(client, application):
             assert found.structured_content["total"] == 1
             explanation = await mcp.call_tool("explain_request", {"plan_id": "saved", "request_id": rid})
             assert explanation.structured_content["decision"]["status"] == "planned"
+            weather = await mcp.call_tool("request_plan_weather", {"plan_id": "saved", "request_id": rid})
+            assert not weather.is_error
+            assert weather.structured_content["cell"] is None
+            bad_edit = await mcp.call_tool(
+                "add_plan_collection",
+                {"plan_id": "saved", "request_id": rid, "start_seconds": -1, "spacecraft_ids": ["sat-0"]},
+            )
+            assert bad_edit.is_error
             bad = await mcp.call_tool("query_decisions", {"plan_id": "saved", "limit": 0})
             assert bad.is_error
             schema = await mcp.read_resource("orbit://schema/requests")
@@ -253,3 +268,47 @@ def test_v1_migration_preserves_catalog_and_backs_up(tmp_path):
     assert len(repository.all_requests()) == 1 and repository.fleet()[0]["id"] == "old"
     assert (tmp_path / "backups" / "before-v2.sqlite").exists()
     assert repository.overview()["legacy_archive"]
+
+
+def test_whatif_rest_job_compare_and_weather_cache(client, application):
+    from tests.test_scheduling import request as make_request
+    from tests.test_scheduling import snapshot, solve
+
+    spec = snapshot([make_request(1)], count=1)
+    ship = spec.spacecraft[0].model_dump(mode="json")
+    ship.update(
+        kind="sampled",
+        samples=[
+            dict(time="2026-09-11T12:00:00Z", x=6928137, y=0, z=0),
+            dict(time="2026-09-11T12:02:00Z", x=6928137, y=0, z=0),
+        ],
+    )
+    spec.spacecraft = [Spacecraft.model_validate(ship)]
+    application.repository.save_plan(solve(spec), spec.model_dump(mode="json"))
+    response = client.post(
+        "/api/plans/test/whatif",
+        json={
+            "name": "Moved",
+            "collections": [{"action": "move", "collection_id": "1:1", "start_seconds": 50}],
+        },
+    )
+    assert response.status_code == 202
+    job_id = response.json()["id"]
+    for _ in range(200):
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "completed", job
+    comparison = client.get(f"/api/plans/test/compare/{job_id}").json()
+    assert comparison["rearranged_collections"] == ["1:1"]
+    assert client.get("/api/plans/test/instructions").json()["items"][0]["start"] == 0
+    assert client.get(f"/api/plans/{job_id}/instructions").json()["items"][0]["start"] == 50
+    assert client.get(f"/api/plans/{job_id}/weather").status_code == 200
+    cache = client.post(
+        "/api/weather/cache", json={"scenario": spec.scenario.model_dump(mode="json"), "plan_id": "test"}
+    )
+    assert cache.status_code == 200 and cache.json()["cells"] == {}
+    assert (
+        client.post("/api/plans/test/whatif", json={"collections": [{"action": "move"}]}).status_code == 422
+    )

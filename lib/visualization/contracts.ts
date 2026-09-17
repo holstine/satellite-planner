@@ -4,6 +4,7 @@
  */
 export type VisualInstruction = {
   id: string;
+  sensor?: string;
   requestId: number;
   spacecraftIndex: number;
   start: number;
@@ -41,6 +42,53 @@ export type ViewState = {
   speed: number;
   selected: number;
   options: ViewOptions;
+  layers?: readonly VisualizationLayer[];
+  basemap?: Basemap;
+};
+export type Basemap = {
+  id: string;
+  label: string;
+  kind: 'natural-earth' | 'xyz';
+  url?: string;
+  attribution: string;
+  maximumLevel?: number;
+};
+export type VisualizationLayer = {
+  id: string;
+  label: string;
+  visible: boolean;
+  opacity: number;
+  attribution: string;
+} & (
+  | {
+      kind: 'xyz-imagery';
+      url: string;
+    }
+  | {
+      kind: 'scalar-grid';
+      unit: string;
+      maximum: number;
+      color: string;
+      defaultTimeUnixMs: number;
+      followPlayback?: boolean;
+      cells: readonly {
+        latitude: number;
+        longitude: number;
+        sizeDegrees: number;
+        times: readonly number[];
+        values: readonly (number | null)[];
+      }[];
+    }
+);
+export type LayerPick = {
+  layerId: string;
+  label: string;
+  value: number;
+  unit: string;
+  timeUnixMs: number;
+  attribution: string;
+  x: number;
+  y: number;
 };
 export type VisualFrame = {
   seconds: number;
@@ -55,6 +103,8 @@ export type ViewerEvents = {
   /** Coordinates are pixels relative to the visualization host. */
   onHover: (pick: RequestPick | null) => void;
   onRender: () => void;
+  onLayerHover?: (pick: LayerPick | null) => void;
+  onError?: (message: string) => void;
 };
 export interface ViewerAdapter {
   setScene(scene: VisualScene): void;

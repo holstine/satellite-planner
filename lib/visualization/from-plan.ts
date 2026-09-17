@@ -43,6 +43,7 @@ export function sceneFromPlan(
       positions,
       instructions: run.instructions.map((i) => ({
         id: i.id,
+        sensor: i.sensor,
         requestId: i.request_id,
         spacecraftIndex: i.satellite_index,
         start: i.start,

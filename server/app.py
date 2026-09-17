@@ -21,6 +21,8 @@ from .domain import (
     Scenario,
     Spacecraft,
     TLEImport,
+    WeatherRefresh,
+    WhatIfSpec,
 )
 from .mcp_server import create_mcp
 from .orbits import target_vectors
@@ -197,8 +199,8 @@ def create_app(application=None):
         return service.repository.cancel_job(job_id)
 
     @app.get("/api/plans")
-    def plans():
-        return service.repository.list_plans()
+    def plans(limit: int = Query(200, ge=1, le=1000)):
+        return service.repository.list_plans(limit)
 
     @app.get("/api/plans/{plan_id}")
     def plan(plan_id: str):
@@ -207,6 +209,28 @@ def create_app(application=None):
     @app.get("/api/plans/{plan_id}/snapshot")
     def snapshot(plan_id: str):
         return service.repository.plan_snapshot(plan_id)
+
+    @app.post("/api/plans/{plan_id}/whatif", status_code=202)
+    async def whatif(plan_id: str, body: WhatIfSpec):
+        return await service.submit_whatif(plan_id, body)
+
+    @app.get("/api/plans/{plan_id}/compare/{other_id}")
+    def compare(plan_id: str, other_id: str):
+        return service.compare(plan_id, other_id)
+
+    @app.get("/api/plans/{plan_id}/weather")
+    def plan_weather(plan_id: str):
+        return service.repository.plan_snapshot(plan_id).get(
+            "weather", {"cells": {}, "request_cells": {}, "captured_at": 0}
+        )
+
+    @app.post("/api/weather/cache")
+    def weather_cache(body: WeatherRefresh):
+        return service.weather.capture(service.weather_input(body)).model_dump(mode="json")
+
+    @app.post("/api/weather/refresh", status_code=202)
+    async def refresh_weather(body: WeatherRefresh):
+        return await service.refresh_weather(body)
 
     @app.get("/api/plans/{plan_id}/decisions")
     def decisions(

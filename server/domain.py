@@ -15,6 +15,7 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
+
 class CollectionRequest(Model):
     name: str = Field(min_length=1, max_length=120)
     latitude: float = Field(ge=-90, le=90)
@@ -34,7 +35,10 @@ class CollectionRequest(Model):
     max_off_nadir_deg: float = Field(default=45, ge=0, le=85)
     daylight_only: bool = True
     min_sun_elevation_deg: float = Field(default=0, ge=-18, le=90)
-    sensor: Literal["optical", "radar"] = "optical"
+    sensor: Literal["optical", "infrared", "radar"] = "optical"
+    max_cloud_cover_pct: float | None = Field(default=None, ge=0, le=100)
+    max_precipitation_mm: float | None = Field(default=None, ge=0, le=1000)
+    max_wind_speed_mps: float | None = Field(default=None, ge=0, le=200)
 
     @model_validator(mode="after")
     def valid_request(self):
@@ -89,8 +93,8 @@ class Spacecraft(Model):
     initial_storage_mb: float = Field(default=0, ge=0, le=100000000)
     capacity: int = Field(default=1, ge=1, le=8)
     max_off_nadir_deg: float = Field(default=60, ge=0, le=85)
-    sensors: list[Literal["optical", "radar"]] = Field(
-        default_factory=lambda: ["optical", "radar"], min_length=1, max_length=2
+    sensors: list[Literal["optical", "infrared", "radar"]] = Field(
+        default_factory=lambda: ["optical", "radar"], min_length=1, max_length=3
     )
 
     @model_validator(mode="after")
@@ -134,6 +138,9 @@ class TLEImport(Model):
 
 
 class Constraints(Model):
+    optical_daylight_only: bool = True
+    affected_by_weather: bool = False
+    max_cloud_cover_pct: float = Field(default=50, ge=0, le=100)
     daylight_only: bool = False
     min_sun_elevation_deg: float = Field(default=0, ge=-18, le=90)
     min_elevation_deg: float = Field(default=0, ge=0, le=90)
@@ -172,6 +179,7 @@ class Generate(Scenario):
     east: float = Field(default=180, ge=-180, le=180)
     randomize_parameters: bool = True
     replace_existing: bool = False
+    randomize_weather: bool = False
 
     @model_validator(mode="after")
     def valid_bounds(self):
@@ -187,13 +195,6 @@ class BulkRequests(Model):
 class ImportText(Model):
     text: str = Field(min_length=1, max_length=20000000)
     format: Literal["csv", "json"] = "csv"
-
-
-class PlanSnapshot(Model):
-    schema_version: int = 2
-    scenario: Scenario
-    spacecraft: list[Spacecraft]
-    requests: list[RequestRecord]
 
 
 class CollectionInstruction(Model):
@@ -216,6 +217,37 @@ class CollectionInstruction(Model):
     priority: int
 
 
+class WeatherSeries(Model):
+    key: str
+    latitude: float
+    longitude: float
+    grid_degrees: float = 0.25
+    provider: str = "open-meteo"
+    fetched_at: float
+    expires_at: float
+    times: list[int]
+    cloud_cover_pct: list[float | None]
+    precipitation_mm: list[float | None]
+    wind_speed_mps: list[float | None]
+
+
+class WeatherSnapshot(Model):
+    captured_at: float = 0
+    cells: dict[str, WeatherSeries] = Field(default_factory=dict)
+    request_cells: dict[int, str] = Field(default_factory=dict)
+    attribution: str = "Weather data by Open-Meteo.com (CC BY 4.0); hourly model forecast, not observations."
+
+
+class PlanSnapshot(Model):
+    schema_version: int = 2
+    scenario: Scenario
+    spacecraft: list[Spacecraft]
+    requests: list[RequestRecord]
+    weather: WeatherSnapshot = Field(default_factory=WeatherSnapshot)
+    locked_instructions: list[CollectionInstruction] = Field(default_factory=list)
+
+
+
 class RequestDecision(Model):
     request_id: int
     name: str
@@ -228,6 +260,7 @@ class RequestDecision(Model):
 
 
 class PlanResult(Model):
+
     schema_version: int = 2
     id: str
     scenario: Scenario
@@ -241,6 +274,52 @@ class PlanResult(Model):
     target_stride: int = 6
     accuracy: str = "Sampled WGS84 geometry; approximate solar direction; deterministic heuristic allocation."
     validation: dict = Field(default_factory=dict)
+    parent_plan_id: str | None = None
+    changes: dict = Field(default_factory=dict)
+    weather_summary: dict = Field(default_factory=dict)
+
+
+class CollectionEdit(Model):
+    action: Literal["add", "remove", "move"]
+    collection_id: str | None = None
+    request_id: int | None = None
+    start_seconds: int | None = Field(default=None, ge=0, le=86400)
+    spacecraft_ids: list[str] | None = Field(default=None, min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def valid_edit(self):
+        if self.action in ("remove", "move") and not self.collection_id:
+            raise ValueError("remove/move requires a collection_id")
+        if self.action == "add" and (
+            self.request_id is None or self.start_seconds is None or not self.spacecraft_ids
+        ):
+            raise ValueError("add requires request_id, start_seconds and spacecraft_ids")
+        if self.action == "move" and self.start_seconds is None and not self.spacecraft_ids:
+            raise ValueError("move requires a new time or spacecraft")
+        if self.spacecraft_ids and len(set(self.spacecraft_ids)) != len(self.spacecraft_ids):
+            raise ValueError("collection spacecraft must be distinct")
+        return self
+
+
+class WhatIfSpec(Model):
+    name: str = Field(default="What-if plan", min_length=1, max_length=120)
+    mode: Literal["edit", "fill", "reschedule"] = "edit"
+    request_changes: list[RequestRecord] = Field(default_factory=list, max_length=10000)
+    add_requests: list[CollectionRequest] = Field(default_factory=list, max_length=10000)
+    remove_request_ids: list[int] = Field(default_factory=list, max_length=10000)
+    spacecraft_changes: list[Spacecraft] = Field(default_factory=list, max_length=1000)
+    remove_spacecraft_ids: list[str] = Field(default_factory=list, max_length=1000)
+    collections: list[CollectionEdit] = Field(default_factory=list, max_length=10000)
+    scenario: Scenario | None = None
+    refresh_weather_snapshot: bool = False
+    save: bool = True
+
+
+class WeatherRefresh(Model):
+    scenario: Scenario
+    plan_id: str | None = None
+    max_locations: int = Field(default=500, ge=1, le=10000)
+    force: bool = False
 
 
 class DomainError(Exception):

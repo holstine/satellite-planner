@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Orbit,
   Play,
@@ -8,7 +8,7 @@ import {
   Layers,
   Database as DatabaseIcon,
 } from 'lucide-react';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { WorkspaceTabs, WorkspacePanel } from './workspace/workspace-tabs';
 import { Slider } from '@/components/ui/slider';
 import { Progress } from '@/components/ui/progress';
 import PlanVisualization from './visualization/plan-visualization';
@@ -16,11 +16,18 @@ import type {
   ViewerFactory,
   VisualizationHandle,
   ViewOptions,
+  VisualizationLayer,
 } from '@/lib/visualization/contracts';
 import SchedulePanel from './workspace/schedule-panel';
 import RequestPanel from './workspace/request-panel';
 import FleetPanel from './workspace/fleet-panel';
 import PlanPanel from './workspace/plan-panel';
+import WeatherPanel from './workspace/weather-panel';
+import BasemapPicker from './workspace/basemap-picker';
+import { resolveBasemap } from '@/lib/basemaps';
+import { weatherLayers } from '@/lib/weather-layers';
+import { planLabel, planNeedsRebuild } from '@/lib/plan-label';
+import { spectra } from '@/lib/visualization/spectra';
 import { Choice, Toggle } from './workspace/controls';
 import {
   api,
@@ -35,6 +42,7 @@ import {
   type Run,
   type Satellite,
   type Scenario,
+  type WeatherData,
 } from '@/lib/orbit-api';
 
 export default function Planner({
@@ -80,6 +88,10 @@ export default function Planner({
     feasibleOnly: false,
   });
   const handle = useRef<VisualizationHandle | null>(null);
+  const loadGeneration = useRef(0);
+  const [basemap, setBasemap] = useState('natural-earth');
+  const selectedBasemap = useMemo(() => resolveBasemap(basemap), [basemap]);
+  const [mapLayers, setMapLayers] = useState<VisualizationLayer[]>([]);
   const working = !!job && ['queued', 'running'].includes(job.status);
   const act = useCallback(async (fn: () => Promise<void>) => {
     setError('');
@@ -104,17 +116,22 @@ export default function Planner({
     setConnected(true);
   }, []);
   const load = useCallback(async (id: string) => {
+    const generation = ++loadGeneration.current;
     const [run, positions, targets, summary] = await Promise.all([
       api<Run>(`/plans/${id}/playback`),
       binary(`/plans/${id}/files/positions.bin`),
       binary(`/plans/${id}/files/targets.bin`),
       api<Run>(`/plans/${id}`),
     ]);
+    if (generation !== loadGeneration.current) return;
     setPlayback({
       run: { ...run, reasons: summary.reasons },
       positions,
       targets,
     });
+    setMapLayers((items) =>
+      items.filter((item) => !item.id.startsWith('weather:')),
+    );
     setPlaying(false);
     setSeconds(0);
     setSelected(0);
@@ -130,7 +147,14 @@ export default function Planner({
             api<Run[]>('/plans'),
             api<{ schedulers: string[] }>('/providers'),
           ]);
-          setScenario((s) => ({ ...s, constraints }));
+          setScenario((s) => ({
+            ...s,
+            constraints: {
+              ...defaults,
+              ...constraints,
+              affected_by_weather: constraints.affected_by_weather === true,
+            },
+          }));
           setSchedulers(providers.schedulers);
           const pending = history.find((j) =>
             ['queued', 'running'].includes(j.status),
@@ -156,17 +180,23 @@ export default function Planner({
         setJob(next);
         if (next.status === 'completed') {
           await refresh();
-          if (next.kind === 'schedule') {
-            await load(next.id);
+          if (next.result?.plan_id) {
+            await load(next.result.plan_id);
             setTab('plan');
             setNotice(
               'Plan saved. Inspect decisions or play through its collections.',
             );
-          } else {
+          } else if (next.kind === 'generate') {
             setPlayback(null);
             setPlaying(false);
             setNotice(
               `Created ${number(next.result?.generated ?? next.result?.accepted)} requests. ${next.result?.note ?? ''}`,
+            );
+          } else {
+            setNotice(
+              next.kind === 'weather'
+                ? `Cached weather for ${next.result?.fetched ?? 0} locations; ${next.result?.remaining ?? 0} still need a refresh. Open Weather to view layers.`
+                : 'What-if preview passed validation; original plan unchanged.',
             );
           }
         } else if (next.status === 'failed')
@@ -218,19 +248,8 @@ export default function Planner({
             <span className="eyebrow">OBSERVATION OPERATIONS</span>
             <h1>Plan. Inspect. Iterate.</h1>
           </div>
-          <Tabs
-            className="workspace-tabs"
-            value={tab}
-            onValueChange={(value) => setTab(String(value))}
-          >
-            <TabsList className="main-tabs" aria-label="Workspace modules">
-              {['schedule', 'requests', 'fleet', 'plan'].map((t) => (
-                <TabsTrigger key={t} value={t}>
-                  {t[0].toUpperCase() + t.slice(1)}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            <TabsContent className="panel-scroll" value="schedule">
+          <WorkspaceTabs value={tab} onChange={setTab}>
+            <WorkspacePanel active={tab} value="schedule">
               <SchedulePanel
                 scenario={scenario}
                 onChange={setScenario}
@@ -244,13 +263,16 @@ export default function Planner({
                   })
                 }
               />
-            </TabsContent>
-            <TabsContent className="panel-scroll" value="requests">
+            </WorkspacePanel>
+            <WorkspacePanel active={tab} value="requests">
               <RequestPanel
                 revision={revision}
                 act={act}
                 changed={async () => {
                   setPlayback(null);
+                  setMapLayers((items) =>
+                    items.filter((item) => !item.id.startsWith('weather:')),
+                  );
                   setPlaying(false);
                   await refresh();
                 }}
@@ -258,11 +280,11 @@ export default function Planner({
                 setJob={setJob}
                 working={working}
               />
-            </TabsContent>
-            <TabsContent className="panel-scroll" value="fleet">
+            </WorkspacePanel>
+            <WorkspacePanel active={tab} value="fleet">
               <FleetPanel fleet={fleet} act={act} changed={refresh} />
-            </TabsContent>
-            <TabsContent className="panel-scroll" value="plan">
+            </WorkspacePanel>
+            <WorkspacePanel active={tab} value="plan">
               <PlanPanel
                 key={plan?.id ?? 'none'}
                 plans={plans}
@@ -270,9 +292,25 @@ export default function Planner({
                 load={load}
                 act={act}
                 seek={seek}
+                setJob={setJob}
+                working={working}
+                job={job}
               />
-            </TabsContent>
-          </Tabs>
+            </WorkspacePanel>
+            <WorkspacePanel active={tab} value="weather">
+              <WeatherPanel
+                key={plan?.id ?? scenario.start}
+                scenario={scenario}
+                plan={plan}
+                job={job}
+                setJob={setJob}
+                working={working}
+                act={act}
+                layers={mapLayers}
+                onLayers={setMapLayers}
+              />
+            </WorkspacePanel>
+          </WorkspaceTabs>
           <details className="database-footer">
             <summary>
               <DatabaseIcon size={14} /> SQLite · MCP connected to all modules
@@ -294,6 +332,8 @@ export default function Planner({
           <div className="map-area">
             <PlanVisualization
               factory={viewerFactory}
+              layers={mapLayers}
+              basemap={selectedBasemap}
               points={points}
               playback={playback}
               playing={playing}
@@ -343,6 +383,61 @@ export default function Planner({
             {layers && (
               <div className="layers">
                 <span className="eyebrow">MAP LAYERS</span>
+                <BasemapPicker value={basemap} onChange={setBasemap} />
+                <Toggle
+                  label="Cloud cover"
+                  checked={mapLayers.some(
+                    (layer) =>
+                      layer.id === 'weather:cloud_cover_pct' && layer.visible,
+                  )}
+                  onChange={(visible) =>
+                    void act(async () => {
+                      const existing = mapLayers.find(
+                        (layer) => layer.id === 'weather:cloud_cover_pct',
+                      );
+                      if (existing) {
+                        setMapLayers((items) =>
+                          items.map((layer) =>
+                            layer.id === existing.id
+                              ? { ...layer, visible }
+                              : layer,
+                          ),
+                        );
+                        return;
+                      }
+                      if (!visible) return;
+                      const generation = loadGeneration.current;
+                      const data = plan
+                        ? await api<WeatherData>(`/plans/${plan.id}/weather`)
+                        : await api<WeatherData>(
+                            '/weather/cache',
+                            { scenario },
+                            'POST',
+                          );
+                      if (generation !== loadGeneration.current) return;
+                      if (!Object.keys(data.cells).length) {
+                        setTab('weather');
+                        setNotice(
+                          'No cloud data for this view. Refresh weather for this timeframe in Weather, then show the cached cloud layer.',
+                        );
+                        return;
+                      }
+                      const cloud = weatherLayers(
+                        data,
+                        plan?.scenario.start ?? scenario.start,
+                        !!plan,
+                      )[0];
+                      setMapLayers((items) => [
+                        ...items.filter((layer) => layer.id !== cloud.id),
+                        cloud,
+                      ]);
+                    })
+                  }
+                />
+                <p className="hint">
+                  Hourly cloud cover at cached locations. Saved plans show the
+                  weather used for that plan.
+                </p>
                 {(
                   [
                     ['targets', 'Target points'],
@@ -388,6 +483,20 @@ export default function Planner({
               </div>
             )}
             <div className="map-legend">
+              {plan && options.lines && (
+                <span className="spectrum-legend">
+                  Collection lines:
+                  {Object.entries(spectra).map(([sensor, style]) => (
+                    <span key={sensor}>
+                      <i
+                        className="line-swatch"
+                        style={{ background: style.color }}
+                      />
+                      {style.label}
+                    </span>
+                  ))}
+                </span>
+              )}
               <span>
                 <i className="dot green" />
                 Has collections
@@ -463,6 +572,35 @@ export default function Planner({
               <span>{elapsed(plan?.scenario.duration_seconds ?? 3600)}</span>
             </div>
           </div>
+          <div className="playback-selection">
+            <label className="field">
+              <span>Choose playback plan · newest first</span>
+              <select
+                aria-label="Playback plan"
+                value={plan?.id ?? ''}
+                onChange={(event) => {
+                  const id = event.target.value;
+                  if (id) void act(() => load(id));
+                  else {
+                    ++loadGeneration.current;
+                    setPlayback(null);
+                    setPlaying(false);
+                    setSeconds(0);
+                    setMapLayers((items) =>
+                      items.filter((item) => !item.id.startsWith('weather:')),
+                    );
+                  }
+                }}
+              >
+                <option value="">Request catalog · no plan</option>
+                {plans.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {planLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="results-strip">
             {[
               ['Spacecraft', displayedFleet.length],
@@ -481,11 +619,36 @@ export default function Planner({
             <div className="compute-stat">
               {plan ? `${plan.elapsed_seconds}s` : 'Ready'}
               <small>
-                {plan ? 'Validated solve' : '100 × 10,000 baseline'}
+                {plan
+                  ? planNeedsRebuild(plan)
+                    ? 'Rebuild required'
+                    : 'Validated solve'
+                  : '100 × 10,000 baseline'}
               </small>
             </div>
           </div>
           <div className="run-notes">
+            {plan && (
+              <div className="plan-checks">
+                {planNeedsRebuild(plan) && (
+                  <strong>
+                    REBUILD REQUIRED — current checks were not run.{' '}
+                  </strong>
+                )}
+                <strong>Saved plan checks:</strong>{' '}
+                {plan.scenario.constraints.daylight_only ||
+                plan.scenario.constraints.optical_daylight_only
+                  ? 'Optical daylight enforced'
+                  : 'Optical night collections allowed by request settings'}
+                {' · '}
+                {plan.scenario.constraints.affected_by_weather === true
+                  ? `Cloud cover enforced (maximum ${plan.scenario.constraints.max_cloud_cover_pct}%)`
+                  : 'Weather NOT checked in this plan'}
+                <br />
+                Changing Schedule settings or showing cloud layers does not
+                alter this saved plan.
+              </div>
+            )}
             {plan?.accuracy ??
               'Local planning sandbox · WGS84 globe · Hover a target for collection information.'}
           </div>

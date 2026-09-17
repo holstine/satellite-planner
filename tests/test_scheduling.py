@@ -65,6 +65,18 @@ def test_priority_capacity_cooldown_and_uniqueness():
     assert plan.validation["passed"]
 
 
+def test_infrared_requires_compatible_spacecraft_and_preserves_command_sensor():
+    spec = snapshot([request(1, sensor="infrared")], sensors=["radar"])
+    assert not solve(spec).result.instructions
+    spec.spacecraft[0].sensors = ["infrared"]
+    plan = solve(spec).result
+    assert len(plan.instructions) == 1
+    assert plan.instructions[0].sensor == "infrared"
+    assert plan.instructions[0].spacecraft_id == spec.spacecraft[0].id
+    spec.scenario.constraints.affected_by_weather = True
+    assert solve(spec).result.decisions[0].reason_code == "weather_unavailable"
+
+
 def test_atomic_simultaneous_collection_and_insufficient_fleet():
     plan = solve(snapshot([request(1, satellites_required=2), request(2, satellites_required=3)])).result
     group = [i for i in plan.instructions if i.request_id == 1]
@@ -133,7 +145,7 @@ def test_daylight_checked_through_entire_collection(monkeypatch):
     from server import visibility
 
     spec = snapshot([request()])
-    spec.requests[0].daylight_only = True
+    spec.requests[0].daylight_only = False  # Shared optical policy still covers the full dwell.
     start = spec.scenario.start.timestamp()
     monkeypatch.setattr(
         visibility,
@@ -143,6 +155,24 @@ def test_daylight_checked_through_entire_collection(monkeypatch):
     plan = solve(spec).result
     assert not plan.instructions
     assert plan.decisions[0].reason_code == "continuous_access"
+
+
+def test_optical_daylight_default_and_independent_validator():
+    spec = snapshot(
+        [request(1), request(2, sensor="radar"), request(3, sensor="infrared")],
+        count=3, sensors=["optical", "infrared", "radar"],
+    )
+    spec.scenario.start = datetime(2026, 9, 11, 0, tzinfo=UTC)
+    plan = solve(spec).result
+    assert {i.request_id for i in plan.instructions} == {2, 3}
+    assert plan.decisions[0].reason_code == "daylight"
+    spec.scenario.constraints.optical_daylight_only = False
+    nighttime = solve(spec).result
+    assert {i.request_id for i in nighttime.instructions} == {1, 2, 3}
+    spec.scenario.constraints.optical_daylight_only = True
+    nighttime.scenario = spec.scenario
+    with pytest.raises(DomainError, match="daylight"):
+        validate_plan(nighttime, spec, StaticEphemeris())
 
 
 def test_validator_rejects_tampered_instructions():

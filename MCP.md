@@ -24,13 +24,17 @@ Changing the current catalog never rewrites a saved plan. To try different assum
 
 ## Tools
 
-| Domain | Tools |
-| --- | --- |
-| Overview / database | `system_overview` |
-| Fleet | `list_spacecraft`, `save_spacecraft`, `replace_fleet`, `create_demo_fleet`, `import_tle_fleet`, `delete_spacecraft`, `spacecraft_state` |
-| Requests | `list_requests`, `get_request`, `save_request`, `bulk_create_requests`, `import_requests`, `delete_request`, `generate_requests` |
-| Scheduling | `configure_constraints`, `schedule_plan`, `list_jobs`, `job_status`, `cancel_job` |
-| Plan | `list_plans`, `plan_summary`, `query_decisions`, `explain_request`, `query_instructions`, `spacecraft_plan` |
+| Domain              | Tools                                                                                                                                   |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Overview / database | `system_overview`                                                                                                                       |
+| Fleet               | `list_spacecraft`, `save_spacecraft`, `replace_fleet`, `create_demo_fleet`, `import_tle_fleet`, `delete_spacecraft`, `spacecraft_state` |
+| Requests            | `list_requests`, `get_request`, `save_request`, `bulk_create_requests`, `import_requests`, `delete_request`, `generate_requests`        |
+| Scheduling          | `configure_constraints`, `schedule_plan`, `list_jobs`, `job_status`, `cancel_job`                                                       |
+| Plan                | `list_plans`, `plan_summary`, `query_decisions`, `explain_request`, `query_instructions`, `spacecraft_plan`                             |
+| What-if             | `what_if_plan`, `add_plan_collection`, `remove_plan_collection`, `move_plan_collection`, `compare_plans`                                |
+| Weather             | `refresh_weather`, `query_cached_weather`, `request_plan_weather`                                                                       |
+
+See [WHAT_IF_WEATHER.md](WHAT_IF_WEATHER.md) for variant editing, preview/save semantics, weather caching, constraints, and examples. What-if and weather jobs use the same asynchronous job-status tools as scheduling. Invalid variants never create a saved plan.
 
 Schema resources: `orbit://schema/requests`, `orbit://schema/spacecraft`, and `orbit://schema/scenario`. REST OpenAPI also exposes the same models at `/openapi.json` and `/docs`.
 

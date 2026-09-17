@@ -2,6 +2,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type {
   RequestPick,
+  LayerPick,
   ViewerFactory,
   VisualizationHandle,
   VisualScene,
@@ -16,6 +17,7 @@ export type ViewerSurfaceProps = ViewState & {
   onTime(seconds: number, fps: number, active: number): void;
   onSelect(index: number): void;
   onHover(pick: RequestPick | null): void;
+  onLayerHover?(pick: LayerPick | null): void;
 };
 
 /** Lifecycle bridge only. Factories, playback and hover UI are separate modules. */
@@ -50,6 +52,12 @@ export default function ViewerSurface(props: ViewerSurfaceProps) {
           },
           onRender: () => {
             frames++;
+          },
+          onLayerHover: (pick) => {
+            if (!disposed) current.current.onLayerHover?.(pick);
+          },
+          onError: (message) => {
+            if (!disposed) setError(message);
           },
         });
         if (disposed) {
@@ -119,7 +127,14 @@ export default function ViewerSurface(props: ViewerSurfaceProps) {
   }, [factory]);
   useEffect(() => {
     runtime.current?.invalidate();
-  }, [props.options, props.selected, props.playing, props.speed]);
+  }, [
+    props.options,
+    props.selected,
+    props.playing,
+    props.speed,
+    props.layers,
+    props.basemap,
+  ]);
   return (
     <>
       <div className="visualization-host" ref={container} />

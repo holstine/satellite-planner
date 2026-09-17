@@ -167,6 +167,7 @@ test('REST projection preserves shared buffers and removes scheduler details fro
             start: 0,
             end: 10,
             energy_wh: 5,
+            sensor: 'infrared',
           },
         ],
       },
@@ -178,4 +179,5 @@ test('REST projection preserves shared buffers and removes scheduler details fro
   assert.equal(scene.spacecraft[0].maxOffNadirDeg, 30);
   assert.equal('battery_capacity_wh' in scene.spacecraft[0], false);
   assert.equal('energy_wh' in scene.timeline.instructions[0], false);
+  assert.equal(scene.timeline.instructions[0].sensor, 'infrared');
 });

@@ -4,12 +4,23 @@ import asyncio
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from .domain import Constraints, DomainError, Generate, PlanSnapshot, Scenario, Spacecraft
+from .domain import (
+    Constraints,
+    DomainError,
+    Generate,
+    PlanSnapshot,
+    Scenario,
+    Spacecraft,
+    WeatherRefresh,
+    WhatIfSpec,
+)
 from .fleet import FleetService, parse_tle
 from .orbits import demo_fleet
 from .plans import PlanService, validate_plan
 from .providers import load_providers, repository_factory
 from .requests import RequestService, generate_requests
+from .weather import WeatherService
+from .whatif import compare_plans, prepare, read_plan, solve_variant
 
 
 def execute_work(factory, options, job_id):
@@ -24,7 +35,33 @@ def execute_work(factory, options, job_id):
     try:
         progress(0, "Starting worker")
         repository.update_job(job_id, status="running")
-        if job["kind"] == "schedule":
+        if job["kind"] == "weather":
+            spec = WeatherRefresh.model_validate(job["request"])
+            result = WeatherService(repository).refresh(
+                PlanSnapshot.model_validate(job["snapshot"]), spec, progress
+            )
+        elif job["kind"] == "whatif":
+            spec = WhatIfSpec.model_validate(job["request"]["spec"])
+            base, snapshot, instructions, added_ids = prepare(
+                repository, job["request"]["source_plan_id"], spec
+            )
+            if spec.refresh_weather_snapshot:
+                snapshot.weather = WeatherService(repository).capture(snapshot)
+            begun = time.perf_counter()
+            solved = solve_variant(job_id, base, snapshot, instructions, spec, load_providers(), progress)
+            solved.result.elapsed_seconds = round(time.perf_counter() - begun, 3)
+            progress(0.98, "Saving validated variant" if spec.save else "What-if validation complete")
+            if spec.save:
+                repository.save_plan(solved, snapshot.model_dump(mode="json"))
+            result = dict(
+                plan_id=job_id if spec.save else None,
+                validation=solved.result.validation,
+                comparison=solved.result.changes,
+                added_request_ids=added_ids,
+                counts=solved.result.counts,
+                elapsed_seconds=solved.result.elapsed_seconds,
+            )
+        elif job["kind"] == "schedule":
             snapshot = PlanSnapshot.model_validate(job["snapshot"])
             providers = load_providers()
             ephemeris = providers.ephemeris(snapshot.scenario.ephemeris_provider)
@@ -64,6 +101,7 @@ class Application:
         self.requests = RequestService(self.repository)
         self.plans = PlanService(self.repository)
         self.fleet = FleetService(self.repository, self.providers.ephemeris("hybrid"))
+        self.weather = WeatherService(self.repository)
         self.pool = None
         self.tasks = set()
 
@@ -97,7 +135,34 @@ class Application:
                 raise DomainError("Add at least one enabled spacecraft")
             if not any(r["enabled"] for r in snapshot["requests"]):
                 raise DomainError("Add at least one enabled request")
-        job = self.repository.create_job(kind, body.model_dump(mode="json"), snapshot)
+            parsed = PlanSnapshot.model_validate(snapshot)
+            parsed.weather = self.weather.capture(parsed)
+            snapshot = parsed.model_dump(mode="json")
+        return self.enqueue(kind, body.model_dump(mode="json"), snapshot)
+
+    async def submit_whatif(self, plan_id, spec):
+        snapshot = self.repository.plan_snapshot(plan_id)
+        return self.enqueue(
+            "whatif", dict(source_plan_id=plan_id, spec=spec.model_dump(mode="json")), snapshot
+        )
+
+    def weather_input(self, spec):
+        if spec.plan_id:
+            return PlanSnapshot.model_validate(self.repository.plan_snapshot(spec.plan_id))
+        return PlanSnapshot.model_validate(self.repository.snapshot(spec.scenario.model_dump(mode="json")))
+
+    async def refresh_weather(self, spec):
+        return self.enqueue(
+            "weather", spec.model_dump(mode="json"), self.weather_input(spec).model_dump(mode="json")
+        )
+
+    def compare(self, first, second):
+        return compare_plans(read_plan(self.repository, first), read_plan(self.repository, second))
+
+    def enqueue(self, kind, body, snapshot):
+        if self.pool is None:
+            raise DomainError("Job worker is not running", 503)
+        job = self.repository.create_job(kind, body, snapshot)
 
         async def run():
             try:
@@ -113,7 +178,7 @@ class Application:
         return job
 
     def constraints(self):
-        return self.repository.get_setting("constraints", Constraints().model_dump())
+        return Constraints.model_validate(self.repository.get_setting("constraints", {})).model_dump()
 
     def save_constraints(self, body):
         self.repository.set_setting("constraints", body.model_dump())

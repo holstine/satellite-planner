@@ -9,8 +9,11 @@ import {
   type Page,
   type Run,
   type Observation,
+  type Job,
 } from '@/lib/orbit-api';
 import { Choice, Pager, type Act } from './controls';
+import WhatIfPanel from './whatif-panel';
+import { planLabel, planNeedsRebuild } from '@/lib/plan-label';
 
 export function CollectionDetails({ detail }: { detail: Explanation }) {
   return (
@@ -64,12 +67,18 @@ export default function PlanPanel({
   load,
   act,
   seek,
+  setJob,
+  working,
+  job,
 }: {
   plans: Run[];
   plan: Run | null;
   load: (id: string) => Promise<void>;
   act: Act;
   seek: (seconds: number) => void;
+  setJob: (job: Job) => void;
+  working: boolean;
+  job: Job | null;
 }) {
   const [status, setStatus] = useState('all'),
     [reason, setReason] = useState('all'),
@@ -139,7 +148,7 @@ export default function PlanPanel({
             }
             items={plans.map((p) => ({
               value: p.id,
-              label: `${p.scenario.name} · ${p.created ? new Date(p.created).toLocaleString() : p.id.slice(0, 8)}`,
+              label: planLabel(p),
             }))}
           />
         ) : (
@@ -160,9 +169,9 @@ export default function PlanPanel({
             <p className="hint">
               {plan.elapsed_seconds}s · {plan.scenario.scheduler}
               <br />
-              {plan.validation.passed
+              {!planNeedsRebuild(plan)
                 ? '✓ Instructions independently validated'
-                : 'Validation unavailable'}
+                : 'Rebuild required — current checks were not run'}
             </p>
             <a
               className="text-link"
@@ -185,6 +194,14 @@ export default function PlanPanel({
       </section>
       {plan && (
         <>
+          <WhatIfPanel
+            plan={plan}
+            setJob={setJob}
+            working={working}
+            job={job}
+            act={act}
+            load={load}
+          />
           <section>
             <h2>Planned & not planned</h2>
             <div className="field-pair">

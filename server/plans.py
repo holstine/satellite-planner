@@ -7,6 +7,7 @@ import numpy as np
 
 from .domain import DomainError
 from .orbits import sun_direction, target_vectors
+from .weather import WeatherEvaluator
 
 
 def validate_plan(plan, snapshot, ephemeris):
@@ -17,6 +18,8 @@ def validate_plan(plan, snapshot, ephemeris):
     requests = {r.id: r for r in snapshot.requests}
     fleet = {s.id: s for s in snapshot.spacecraft}
     rules = snapshot.scenario.constraints
+    weather = WeatherEvaluator(snapshot)
+    request_indices = {r.id: index for index, r in enumerate(snapshot.requests)}
     require(
         plan.scenario == snapshot.scenario and plan.satellites == snapshot.spacecraft,
         "output changed the input snapshot",
@@ -73,6 +76,16 @@ def validate_plan(plan, snapshot, ephemeris):
             "collection participants are not synchronized",
         )
         by_request[first.request_id].append(first)
+        ok, reason = weather.check_collection(request_indices[first.request_id], first.start, first.end)
+        require(ok, f"{reason} for request {first.request_id}, collection {first.collection_id}")
+    actual = {(i.collection_id, i.request_id, i.spacecraft_id, i.start, i.end) for i in plan.instructions}
+    require(
+        all(
+            (i.collection_id, i.request_id, i.spacecraft_id, i.start, i.end) in actual
+            for i in snapshot.locked_instructions
+        ),
+        "a fixed collection was moved or removed",
+    )
     for request_id, groups in by_request.items():
         request = requests[request_id]
         ordered = sorted(groups, key=lambda i: i.start)
@@ -145,6 +158,7 @@ def validate_plan(plan, snapshot, ephemeris):
                     max(
                         r["min_sun_elevation_deg"] if r["daylight_only"] else -90,
                         rules.min_sun_elevation_deg if rules.daylight_only else -90,
+                        0 if rules.optical_daylight_only and r["sensor"] == "optical" else -90,
                     )
                     for r in target_rows
                 ]
@@ -193,6 +207,8 @@ def validate_plan(plan, snapshot, ephemeris):
             "sampled_angles",
             "sampled_daylight",
             "decisions",
+            "weather",
+            "fixed_collections",
         ],
     )
 

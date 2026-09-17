@@ -31,24 +31,23 @@ export const createCesiumViewer: ViewerFactory = async (container, events) => {
     viewer.resolutionScale =
       Math.min(window.devicePixelRatio || 1, 1.5) /
       (window.devicePixelRatio || 1);
-    void c.TileMapServiceImageryProvider.fromUrl(
-      '/cesium/Assets/Textures/NaturalEarthII',
-    )
-      .then((provider) => {
-        if (!viewer.isDestroyed()) {
-          viewer.imageryLayers.addImageryProvider(provider);
-          viewer.scene.requestRender();
-        }
-      })
-      .catch(() => {
-        /* The base globe works without imagery. */
-      });
     const adapter = attachCesiumViewer(c, viewer, events, {
       synchronizeClock: true,
     });
     adapter.home();
     return {
       ...adapter,
+      render(frame, state) {
+        adapter.render(frame, {
+          ...state,
+          basemap: state.basemap ?? {
+            id: 'natural-earth',
+            label: 'Natural Earth',
+            kind: 'natural-earth',
+            attribution: 'Natural Earth',
+          },
+        });
+      },
       destroy() {
         adapter.destroy();
         if (!viewer.isDestroyed()) viewer.destroy();

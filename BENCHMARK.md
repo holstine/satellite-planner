@@ -17,13 +17,14 @@ The benchmark uses a temporary database and does not change the working catalog.
 - Seed 42; latitude −60° to 70°, full longitude; uniform area sampling.
 - 10,000 generated requests without feasibility filtering; mixed priority, duration (10/20/30/45/60/90/120 seconds), per-sat energy/data costs, optical/radar sensor, daylight rules, minimum and maximum pointing angles, variable time-window starts and ends, 1–3 simultaneous spacecraft, and 1–2 collections.
 - 30-second candidate-start grid, 5-second validation samples, exact collection endpoints.
+- Optical daylight required; weather checks disabled for this offline benchmark.
 - Priority-first allocation, capacity one per spacecraft, 10-second cooldown, initial battery 400 Wh, reserve 40 Wh, storage 10,000 MB.
 
 ## Measured result
 
-The current mixed-orbit, unfiltered workload measured **1.386 seconds for generation**, **40.885 seconds for scheduling**, **0.171 seconds for validation**, and **0.510 seconds for saving**. Solve/validate/save is **41.566 seconds**, which exceeds the 30-second budget. Actual timings vary with machine load; consult the JSON for the latest measured values.
+The current mixed-orbit, unfiltered workload measured **1.219 seconds for generation**, **33.041 seconds for scheduling**, **0.180 seconds for validation**, and **0.638 seconds for saving**. Solve/validate/save is **33.859 seconds**, which exceeds the 30-second budget. Actual timings vary with machine load; consult the JSON for the latest measured values.
 
-The deterministic workload produces **2,932 fully satisfied requests**, **73 partial requests**, and **6,995 unplanned requests**: **3,233 synchronized collections** containing **3,511 spacecraft instructions**. The validator checks **38,658 geometry samples** in addition to capacity, cooldown, windows, synchronization, repeats, sensors, energy, storage, and decision consistency.
+The deterministic workload produces **2,549 fully satisfied requests**, **54 partial requests**, and **7,397 unplanned requests**: **2,804 synchronized collections** containing **3,052 spacecraft instructions**. The validator checks **33,781 geometry samples** in addition to capacity, cooldown, windows, synchronization, repeats, sensors, energy, storage, and decision consistency.
 
 Packed ephemeris: **866,400 bytes**. Target playback buffer: **480,000 bytes**. Saved plan, input snapshot, decisions, instructions, and artifacts occupy about **22 MB** in the isolated database.
 

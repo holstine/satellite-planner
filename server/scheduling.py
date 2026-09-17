@@ -8,6 +8,35 @@ import numpy as np
 from .contracts import SolvedPlan
 from .domain import CollectionInstruction, PlanResult, RequestDecision
 from .visibility import Opportunities
+from .weather import weather_summary
+
+
+def interval_available(items, start, end, capacity, cooldown):
+    """Check concurrent occupation including cooldown against future reservations."""
+    events = [(start, 1), (end + cooldown, -1)]
+    for a, b in items:
+        if a < end + cooldown and start < b + cooldown:
+            events.extend(((a, 1), (b + cooldown, -1)))
+    count = 0
+    for _, delta in sorted(events):
+        count += delta
+        if count > capacity:
+            return False
+    return True
+
+
+def update_resource_states(instructions, fleet):
+    instructions.sort(key=lambda i: (i.start, i.id))
+    for si, spacecraft in enumerate(fleet):
+        battery, storage = spacecraft.initial_battery_wh, spacecraft.initial_storage_mb
+        for instruction in sorted(
+            (i for i in instructions if i.satellite_index == si), key=lambda i: (i.start, i.id)
+        ):
+            instruction.battery_before_wh = battery
+            battery -= instruction.energy_wh
+            storage += instruction.data_mb
+            instruction.battery_after_wh = battery
+            instruction.storage_after_mb = storage
 
 
 class GreedyScheduler:
@@ -25,7 +54,22 @@ class GreedyScheduler:
         storage = np.array([s.initial_storage_mb for s in fleet])
         completed = np.zeros(len(requests), dtype=int)
         next_collection = np.zeros(len(requests))
-        instructions = []
+        instructions = [i.model_copy(deep=True) for i in snapshot.locked_instructions]
+        reservations = [[] for _ in fleet]
+        request_slots = {r.id: {} for r in requests}
+        for instruction in instructions:
+            si = instruction.satellite_index
+            battery[si] -= instruction.energy_wh
+            storage[si] += instruction.data_mb
+            reservations[si].append((instruction.start, instruction.end))
+            request_slots[instruction.request_id][instruction.collection_id] = (
+                instruction.start,
+                instruction.end,
+            )
+        for ri, request in enumerate(requests):
+            completed[ri] = len(request_slots[request.id])
+            if completed[ri] >= request.collections_required:
+                opportunities.enabled[ri] = False
         evidence = opportunities.evidence
         for offset, available in opportunities.scan():
             for ri in self.order(available, requests):
@@ -39,9 +83,26 @@ class GreedyScheduler:
                 if next_collection[ri] > offset:
                     evidence["revisit_rejections"][ri] += 1
                     continue
+                if snapshot.locked_instructions and any(
+                    not (
+                        offset >= end + request.revisit_seconds
+                        or offset + request.duration_seconds + request.revisit_seconds <= start
+                    )
+                    for start, end in request_slots[request.id].values()
+                ):
+                    evidence["revisit_rejections"][ri] += 1
+                    continue
                 eligible = []
                 for si in participants:
                     busy = not np.any(free[si] <= offset)
+                    if snapshot.locked_instructions:
+                        busy = not interval_available(
+                            reservations[si],
+                            offset,
+                            offset + request.duration_seconds,
+                            min(rules.capacity_per_satellite, fleet[si].capacity),
+                            rules.cooldown_seconds,
+                        )
                     no_energy = battery[si] - request.energy_wh < fleet[si].battery_reserve_wh - 1e-9
                     no_storage = storage[si] + request.data_mb > fleet[si].storage_capacity_mb + 1e-9
                     evidence["capacity_rejections"][ri] += int(busy)
@@ -56,12 +117,16 @@ class GreedyScheduler:
                     : request.satellites_required
                 ]
                 collection_id = f"{request.id}:{completed[ri] + 1}"
+                if snapshot.locked_instructions:
+                    collection_id = f"{request.id}:fill:{plan_id}:{completed[ri] + 1}"
                 for si in selected:
                     lane = int(np.flatnonzero(free[si] <= offset)[0])
                     free[si][lane] = offset + request.duration_seconds + rules.cooldown_seconds
                     before = float(battery[si])
                     battery[si] -= request.energy_wh
                     storage[si] += request.data_mb
+                    if snapshot.locked_instructions:
+                        reservations[si].append((offset, offset + request.duration_seconds))
                     instructions.append(
                         CollectionInstruction(
                             id=f"{collection_id}:{fleet[si].id}",
@@ -83,6 +148,7 @@ class GreedyScheduler:
                         )
                     )
                 completed[ri] += 1
+                request_slots[request.id][collection_id] = (offset, offset + request.duration_seconds)
                 next_collection[ri] = offset + request.duration_seconds + request.revisit_seconds
                 if completed[ri] >= request.collections_required:
                     opportunities.enabled[ri] = False
@@ -134,6 +200,16 @@ class GreedyScheduler:
                     + "."
                 )
                 ev["blockers"] = list(blockers)
+            elif ev["weather_unavailable"]:
+                code, explanation = (
+                    "weather_unavailable",
+                    "Required model weather is missing, stale, or outside the cached timeframe. Refresh weather before scheduling.",
+                )
+            elif ev["weather_rejections"]:
+                code, explanation = (
+                    "weather",
+                    "Cached hourly model weather exceeded the request's cloud, precipitation, or wind limits during candidate collection intervals.",
+                )
             elif ev["single_spacecraft_opportunities"]:
                 code, explanation = (
                     "simultaneous_spacecraft",
@@ -168,7 +244,9 @@ class GreedyScheduler:
                     evidence=ev,
                 )
             )
-        feasible = evidence["synchronized_opportunities"] > 0
+        if snapshot.locked_instructions:
+            update_resource_states(instructions, fleet)
+        feasible = (evidence["synchronized_opportunities"] > 0) | (completed > 0)
         scheduled = completed > 0
         step = rules.ephemeris_step_seconds
         # Include the exact endpoint; the final interpolation interval may be shorter.
@@ -203,6 +281,7 @@ class GreedyScheduler:
             elapsed_seconds=round(time.perf_counter() - begun, 3),
             sample_step=step,
             sample_count=len(seconds),
+            weather_summary=weather_summary(snapshot),
         )
         result.elapsed_seconds = round(time.perf_counter() - begun, 3)
         return SolvedPlan(result, tracks.astype("<f8").tobytes(), packed.tobytes())

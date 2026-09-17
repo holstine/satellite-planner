@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as Cesium from 'cesium';
 import { attachCesiumViewer } from '../lib/visualization/cesium/adapter.ts';
+import { createLayers } from '../lib/visualization/cesium/layers.ts';
+import { createBasemap } from '../lib/visualization/cesium/basemap.ts';
+import { basemaps, resolveBasemap } from '../lib/basemaps.ts';
 
 // Exercise real Cesium primitives/geometry without creating a WebGL context.
 // These DOM classes are used only for Material's instanceof checks.
@@ -90,6 +93,172 @@ const options = {
   horizon: true,
   feasibleOnly: false,
 };
+
+test('basemap switches preserve overlays and ignore late asynchronous loads', async () => {
+  const items = [{ id: 'host-overlay' }];
+  const viewer = {
+    isDestroyed: () => false,
+    scene: { requestRender() {} },
+    imageryLayers: {
+      addImageryProvider(provider, index) {
+        const item = { provider };
+        items.splice(index, 0, item);
+        return item;
+      },
+      remove(item) {
+        items.splice(items.indexOf(item), 1);
+      },
+    },
+  };
+  let finishOffline;
+  const c = {
+    ...Cesium,
+    TileMapServiceImageryProvider: {
+      fromUrl: () =>
+        new Promise((resolve) => {
+          finishOffline = resolve;
+        }),
+    },
+    UrlTemplateImageryProvider: class {
+      constructor(options) {
+        this.options = options;
+        this.errorEvent = new Cesium.Event();
+      }
+    },
+  };
+  const manager = createBasemap(c, viewer);
+  manager.update(resolveBasemap('natural-earth'));
+  manager.update(resolveBasemap('esri-imagery'));
+  await Promise.resolve();
+  const imagery = items[0];
+  assert.ok(imagery.provider.options.url.includes('World_Imagery'));
+  finishOffline({ errorEvent: new Cesium.Event() });
+  await Promise.resolve();
+  assert.equal(items[0], imagery);
+  manager.update(resolveBasemap('osm'));
+  await Promise.resolve();
+  assert.ok(items[0].provider.options.url.includes('openstreetmap'));
+  assert.equal(items.length, 2);
+  manager.destroy();
+  assert.deepEqual(items, [{ id: 'host-overlay' }]);
+  assert.equal(resolveBasemap('removed-map').id, 'natural-earth');
+  assert.ok(
+    basemaps.every(
+      (map) => !map.keyParameter && !/[?&](key|token)=/.test(map.url ?? ''),
+    ),
+  );
+});
+
+test('weather layers follow time, skip missing data, reuse geometry and preserve foreign layers', () => {
+  const h = host();
+  const manager = createLayers(Cesium, h.viewer, {});
+  const spec = {
+    id: 'weather',
+    kind: 'scalar-grid',
+    label: 'Cloud cover',
+    visible: true,
+    opacity: 0.5,
+    attribution: 'Test provider',
+    unit: '%',
+    maximum: 100,
+    color: '#ffffff',
+    defaultTimeUnixMs: 0,
+    cells: [
+      {
+        latitude: 0.125,
+        longitude: 0.125,
+        sizeDegrees: 0.25,
+        times: [0, 3600000, 7200000],
+        values: [20, 80, null],
+      },
+    ],
+  };
+  const layers = [spec];
+  manager.update(layers, 0);
+  const first = h.viewer.scene.primitives.get(2);
+  assert.equal(first.geometryInstances[0].id.layer.value, 20);
+  manager.update(layers, 15000);
+  assert.equal(
+    h.viewer.scene.primitives.get(2),
+    first,
+    'no mesh rebuild within the hour',
+  );
+  manager.update(layers, 3600000);
+  assert.equal(first.isDestroyed(), true);
+  assert.equal(
+    h.viewer.scene.primitives.get(2).geometryInstances[0].id.layer.value,
+    80,
+  );
+  manager.update(layers, 7200000);
+  assert.equal(
+    h.viewer.scene.primitives.length,
+    2,
+    'missing weather has no fabricated tile',
+  );
+  manager.update([{ ...spec, followPlayback: false }], 7200000);
+  assert.equal(
+    h.viewer.scene.primitives.get(2).geometryInstances[0].id.layer.value,
+    20,
+    'catalog forecast can use its own timeframe',
+  );
+  manager.destroy();
+  assert.equal(h.viewer.scene.primitives.get(0), h.foreignLayer);
+  assert.equal(h.foreignLayer.isDestroyed(), false);
+  h.adapter.destroy();
+  h.viewer.scene.primitives.destroy();
+});
+
+test('imagery layer updates and removal preserve host imagery', () => {
+  const items = [{ id: 'foreign' }];
+  const viewer = {
+    isDestroyed: () => false,
+    scene: { primitives: new Cesium.PrimitiveCollection() },
+    imageryLayers: {
+      addImageryProvider(provider) {
+        const item = { provider, show: true, alpha: 1 };
+        items.push(item);
+        return item;
+      },
+      remove(item) {
+        items.splice(items.indexOf(item), 1);
+      },
+      raiseToTop(item) {
+        items.splice(items.indexOf(item), 1);
+        items.push(item);
+      },
+    },
+  };
+  const manager = createLayers(
+    {
+      ...Cesium,
+      UrlTemplateImageryProvider: class {
+        constructor(options) {
+          this.options = options;
+        }
+      },
+    },
+    viewer,
+    {},
+  );
+  const layer = {
+    id: 'tiles',
+    kind: 'xyz-imagery',
+    label: 'Tiles',
+    visible: true,
+    opacity: 0.6,
+    attribution: 'Provider',
+    url: 'https://example.invalid/{z}/{x}/{y}.png',
+  };
+  manager.update([layer], null);
+  const overlay = items[1];
+  manager.update([{ ...layer, visible: false, opacity: 0.2 }], null);
+  assert.equal(items[1], overlay);
+  assert.equal(overlay.show, false);
+  assert.equal(overlay.alpha, 0.2);
+  manager.destroy();
+  assert.deepEqual(items, [{ id: 'foreign' }]);
+  viewer.scene.primitives.destroy();
+});
 function renderPlan(adapter) {
   const scene = {
     planId: 'saved',
@@ -114,6 +283,36 @@ function renderPlan(adapter) {
   adapter.render(frame, { options, playing: false, selected: 0, speed: 1 });
   return frame;
 }
+
+test('collection line pool recolors reused lines by sensor, including unknown sensors', () => {
+  const h = host();
+  const frame = renderPlan(h.adapter);
+  const lines = h.viewer.scene.primitives.get(1).get(2);
+  const pooled = lines.get(0);
+  for (const [sensor, hex] of [
+    ['optical', '#6ef2cc'],
+    ['infrared', '#ff9854'],
+    ['radar', '#c49aff'],
+    ['future-sensor', '#d4dde5'],
+    [undefined, '#d4dde5'],
+    ['optical', '#6ef2cc'],
+  ]) {
+    h.adapter.render(
+      { ...frame, active: [{ ...frame.active[0], sensor }] },
+      { options, playing: false, selected: 0, speed: 1 },
+    );
+    assert.equal(lines.length, 1);
+    assert.equal(lines.get(0), pooled);
+    assert.ok(
+      Cesium.Color.equals(
+        pooled.material.uniforms.color,
+        Cesium.Color.fromCssColorString(hex).withAlpha(0.9),
+      ),
+    );
+  }
+  h.adapter.destroy();
+  h.viewer.scene.primitives.destroy();
+});
 
 test('attachment renders solid cones and removes only its own layers/listeners', () => {
   const h = host();

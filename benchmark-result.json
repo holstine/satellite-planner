@@ -3,32 +3,32 @@
     "generated": 10000,
     "requested": 10000,
     "complete": true,
-    "elapsed_seconds": 1.386,
+    "elapsed_seconds": 1.219,
     "seed": 42,
     "note": "All requests created. Feasibility and allocation are evaluated only when scheduling."
   },
-  "solve_seconds": 40.885,
-  "validation_seconds": 0.171,
-  "save_seconds": 0.51,
+  "solve_seconds": 33.041,
+  "validation_seconds": 0.18,
+  "save_seconds": 0.638,
   "counts": {
     "targets": 10000,
-    "feasible": 5942,
-    "scheduled": 3005,
-    "inaccessible": 4058,
-    "unassigned": 2937,
-    "observations": 3511,
-    "collections": 3233,
+    "feasible": 5162,
+    "scheduled": 2603,
+    "inaccessible": 4838,
+    "unassigned": 2559,
+    "observations": 3052,
+    "collections": 2804,
     "requested_collections": 11022,
-    "candidates": 8947763,
-    "unplanned": 6995,
-    "planned": 2932,
-    "partial": 73
+    "candidates": 9255426,
+    "unplanned": 7397,
+    "planned": 2549,
+    "partial": 54
   },
   "validation": {
     "passed": true,
-    "instructions_checked": 3511,
-    "collections_checked": 3233,
-    "geometry_samples": 38658,
+    "instructions_checked": 3052,
+    "collections_checked": 2804,
+    "geometry_samples": 33781,
     "checks": [
       "membership",
       "time_windows",
@@ -42,13 +42,15 @@
       "sensors",
       "sampled_angles",
       "sampled_daylight",
-      "decisions"
+      "decisions",
+      "weather",
+      "fixed_collections"
     ]
   },
   "positions_bytes": 866400,
   "targets_bytes": 480000,
-  "database_bytes": 22032384,
-  "total_seconds": 43.056,
+  "database_bytes": 22675456,
+  "total_seconds": 35.193,
   "solve_budget_seconds": 30,
   "solve_budget_passed": false
 }

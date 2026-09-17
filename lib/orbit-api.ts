@@ -1,4 +1,7 @@
 export type Constraints = {
+  optical_daylight_only: boolean;
+  affected_by_weather: boolean;
+  max_cloud_cover_pct: number;
   daylight_only: boolean;
   min_sun_elevation_deg: number;
   min_elevation_deg: number;
@@ -28,7 +31,10 @@ export type CollectionRequest = {
   max_off_nadir_deg: number;
   daylight_only: boolean;
   min_sun_elevation_deg: number;
-  sensor: 'optical' | 'radar';
+  sensor: 'optical' | 'infrared' | 'radar';
+  max_cloud_cover_pct?: number | null;
+  max_precipitation_mm?: number | null;
+  max_wind_speed_mps?: number | null;
 };
 export type Target = CollectionRequest & { id: number };
 export type Satellite = {
@@ -54,10 +60,11 @@ export type Satellite = {
   initial_storage_mb: number;
   capacity: number;
   max_off_nadir_deg: number;
-  sensors: ('optical' | 'radar')[];
+  sensors: ('optical' | 'infrared' | 'radar')[];
 };
 export type Observation = {
   id: string;
+  sensor: string;
   collection_id: string;
   request_id: number;
   spacecraft_id: string;
@@ -93,6 +100,19 @@ export type Run = {
   accuracy: string;
   validation: { passed: boolean; geometry_samples: number };
   reasons?: Record<string, number>;
+  parent_plan_id?: string | null;
+  changes?: {
+    added_collections: string[];
+    removed_collections: string[];
+    rearranged_collections: string[];
+    retained_collections: number;
+    count_delta: Record<string, number>;
+  };
+  weather_summary?: {
+    required_requests: number;
+    cached_cells: number;
+    attribution: string;
+  };
 };
 export type Playback = {
   run: Run;
@@ -132,6 +152,10 @@ export type Job = {
     complete?: boolean;
     note?: string;
     elapsed_seconds?: number;
+    validation?: { passed: boolean };
+    comparison?: Run['changes'];
+    fetched?: number;
+    remaining?: number;
   };
 };
 export type Database = {
@@ -141,7 +165,28 @@ export type Database = {
   size_bytes: number;
   legacy_note: string | null;
 };
+export type WeatherData = {
+  captured_at: number;
+  attribution?: string;
+  cells: Record<
+    string,
+    {
+      latitude: number;
+      longitude: number;
+      grid_degrees: number;
+      fetched_at: number;
+      expires_at: number;
+      times: number[];
+      cloud_cover_pct: (number | null)[];
+      precipitation_mm: (number | null)[];
+      wind_speed_mps: (number | null)[];
+    }
+  >;
+};
 export const defaults: Constraints = {
+  optical_daylight_only: true,
+  affected_by_weather: false,
+  max_cloud_cover_pct: 50,
   daylight_only: false,
   min_sun_elevation_deg: 0,
   min_elevation_deg: 0,

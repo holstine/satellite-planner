@@ -7,7 +7,7 @@ import {
   type Playback,
 } from '@/lib/orbit-api';
 import { sceneFromPlan } from '@/lib/visualization/from-plan';
-import type { RequestPick } from '@/lib/visualization/contracts';
+import type { RequestPick, LayerPick } from '@/lib/visualization/contracts';
 import ViewerSurface, { type ViewerSurfaceProps } from './viewer-surface';
 import { CollectionDetails } from '../workspace/plan-panel';
 
@@ -23,6 +23,7 @@ export default function PlanVisualization({
   ...props
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
+  const [layerPick, setLayerPick] = useState<LayerPick | null>(null);
   const scene = useMemo(
     () => sceneFromPlan(playback, points),
     [playback, points],
@@ -87,7 +88,26 @@ export default function PlanVisualization({
   const value = hover?.value;
   return (
     <div className="globe-root" ref={root}>
-      <ViewerSurface {...props} scene={scene} onHover={onHover} />
+      <ViewerSurface
+        {...props}
+        scene={scene}
+        onHover={onHover}
+        onLayerHover={setLayerPick}
+      />
+      {layerPick && (
+        <div
+          className="target-hover"
+          role="tooltip"
+          style={{ left: layerPick.x + 12, top: layerPick.y + 12 }}
+        >
+          <h3>{layerPick.label}</h3>
+          <p>
+            {layerPick.value} {layerPick.unit}
+          </p>
+          <p>{new Date(layerPick.timeUnixMs).toISOString()}</p>
+          <small>{layerPick.attribution}</small>
+        </div>
+      )}
       {hover && (
         <div
           className="target-hover"

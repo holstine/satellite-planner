@@ -33,6 +33,8 @@ Viewer pick -> application request inspection -> REST plan explanation
 
 Renderers never fetch targets, schedule requests, query the database, or know the full plan/API model. They emit request IDs and spacecraft indices; the application resolves inspection details. No Cesium object crosses the public contract.
 
+`ViewState.layers` now accepts ordered `VisualizationLayer` overlays (XYZ imagery or time-indexed scalar grids). `ViewerEvents.onLayerHover` reports scalar values and attribution independently of request picking. The Cesium implementation is in `cesium/layers.ts`; application weather projection remains outside that directory. See [WHAT_IF_WEATHER.md](WHAT_IF_WEATHER.md) for cache, weather-layer, and timeline semantics.
+
 ## Use another Cesium viewer
 
 Supply the host's Cesium SDK instance and its existing `Viewer` to `attachCesiumViewer`. Importing the adapter does not load the bundled SDK or its stylesheet. Use the same SDK version/instance that created the host viewer.
@@ -61,6 +63,8 @@ The optional settings argument supports `synchronizeClock: true` when the host e
 
 ## Use another renderer
 
+Optional `ViewState.basemap` and `ViewState.layers` supply renderer-neutral basemap and overlay descriptions. The bundled viewer defaults to Natural Earth. An attached host viewer retains its imagery unless a basemap is explicitly supplied; switching replaces only the adapter-owned base layer. Layer controls support visibility, opacity, order, XYZ imagery, and time-indexed scalar grids. Basemap switching ignores late asynchronous results, and disposal preserves host-owned layers.
+
 Implement `ViewerFactory(container, events)` returning an adapter with four methods:
 
 - `setScene(scene)`: load immutable scene data when it changes.
@@ -77,5 +81,7 @@ The application projection shares plan binary arrays without copying. Treat scen
 For non-React integration, instantiate `createPlaybackController(adapter)`, call `setScene`, then call `tick(elapsedSeconds, viewState)` from the host's animation loop. Call `invalidate()` after changing display state while paused, `seek(seconds)` for jumps, and `destroy()` on detach. Do not also run `ViewerSurface`'s clock for the same adapter.
 
 ## Verification
+
+Collection instructions carry an optional sensor string through the renderer-neutral contract. Collection lines use mint for optical, orange for infrared, purple for radar, and gray for unknown/missing sensors. The shared palette in `lib/visualization/spectra.ts` also drives the map legend. Pooled lines update their color when reused; colors are cached rather than allocated per animation frame. Target point colors continue to indicate scheduling status.
 
 Run `npm run test:visualization`, `npx tsc --noEmit`, `npm run lint`, and `npm run build`. Tests cover a replacement viewer with no Cesium dependency, interpolation including the short final interval, forward/reverse seeks, catalog/plan transitions, shared buffers, and real Cesium primitive creation and disposal against a lightweight host stub. They verify foreign layers/clock are preserved and cone geometry is solid. These checks do not measure browser FPS or guarantee compatibility with every third-party viewer wrapper; those wrappers need an integration factory as above.
